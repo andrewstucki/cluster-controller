@@ -25,7 +25,20 @@ import (
 )
 
 // For update implementation, see:
-// 	https://github.com/pingcap/advanced-statefulset/blob/af926cc6da0de6138d66d0da9cae144bd54b9885/pkg/controller/statefulset/stateful_set_control.go#L90
+//	https://github.com/pingcap/advanced-statefulset/blob/af926cc6da0de6138d66d0da9cae144bd54b9885/pkg/controller/statefulset/stateful_set_control.go#L90
+// Logic for creating an old pod based off of a previous controller resource version if it needs to be scaled up
+// first:
+//	https://github.com/pingcap/advanced-statefulset/blob/af926cc6da0de6138d66d0da9cae144bd54b9885/pkg/controller/statefulset/stateful_set_utils.go#L267
+//
+// General implementation:
+// 1. Create a controller resource version snapshot for the current CRD
+// 2. Pull the last
+// 3. If an update is needed:
+//    a. scale up to final desired state with old snapshot
+//    b. restart any failed pods
+//    c. wait until everything stabilizes
+//    d. scale down waiting for stabilization in between
+//    e. rolling restart all pods
 
 const (
 	podOwnerKey = ".metadata.controller"
