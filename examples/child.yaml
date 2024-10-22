@@ -1,0 +1,7 @@
+---
+apiVersion: relation.lambda.coffee/v1alpha1
+kind: Child
+metadata:
+  name: child
+spec:
+  parent: parent

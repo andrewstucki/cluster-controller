@@ -1,0 +1,5 @@
+## Append samples of your project ##
+resources:
+- relation_v1alpha1_parent.yaml
+- relation_v1alpha1_child.yaml
+# +kubebuilder:scaffold:manifestskustomizesamples

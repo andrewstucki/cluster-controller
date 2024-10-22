@@ -1,0 +1,23 @@
+# permissions for end users to view parents.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/name: cluster-controller
+    app.kubernetes.io/managed-by: kustomize
+  name: parent-viewer-role
+rules:
+- apiGroups:
+  - cluster.lambda.coffee
+  resources:
+  - clusters
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - cluster.lambda.coffee
+  resources:
+  - clusters/status
+  verbs:
+  - get
