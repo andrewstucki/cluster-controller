@@ -24,6 +24,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
+// For update implementation, see:
+// 	https://github.com/pingcap/advanced-statefulset/blob/af926cc6da0de6138d66d0da9cae144bd54b9885/pkg/controller/statefulset/stateful_set_control.go#L90
+
 const (
 	podOwnerKey = ".metadata.controller"
 )
