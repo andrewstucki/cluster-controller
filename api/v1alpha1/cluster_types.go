@@ -23,11 +23,51 @@ import (
 // EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
 // NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
 
+const (
+	defaultImage = "bhargavshah86/kube-test:v0.1"
+
+	// ClusterKind is the name of the cluster kind
+	ClusterKind = "Cluster"
+)
+
 // ClusterSpec defines the desired state of Cluster
-type ClusterSpec struct{}
+type ClusterSpec struct {
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:default:=1
+	Replicas int `json:"replicas"`
+	// +optional
+	SchedulerName string `json:"schedulerName,omitempty"`
+	// +optional
+	Image string `json:"image,omitempty"`
+}
+
+func (cluster *Cluster) GetImageName() string {
+	// If the image is specified in the status, use that one
+	// It should be there since the first reconciliation
+	if len(cluster.Status.Image) > 0 {
+		return cluster.Status.Image
+	}
+
+	// Fallback to the information we have in the spec
+	if len(cluster.Spec.Image) > 0 {
+		return cluster.Spec.Image
+	}
+
+	// finally use what the current controller defaults to
+	return defaultImage
+}
 
 // ClusterStatus defines the observed state of Cluster
-type ClusterStatus struct{}
+type ClusterStatus struct {
+	// +optional
+	Replicas int `json:"replicas,omitempty"`
+	// +optional
+	ReadyReplicas int `json:"readyReplicas,omitempty"`
+	// +optional
+	LatestGeneratedNode int `json:"latestGeneratedNode,omitempty"`
+	// +optional
+	Image string `json:"image,omitempty"`
+}
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
