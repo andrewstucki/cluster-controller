@@ -141,10 +141,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err = (&controller.ClusterReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-	}).SetupWithManager(ctx, mgr); err != nil {
+	if err = controller.SetupReconciler[clusterv1alpha1.Cluster](ctx, mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Cluster")
 		os.Exit(1)
 	}

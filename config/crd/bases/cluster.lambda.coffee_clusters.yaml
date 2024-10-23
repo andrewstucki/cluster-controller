@@ -57,13 +57,27 @@ spec:
           status:
             description: ClusterStatus defines the observed state of Cluster
             properties:
+              collisionCount:
+                format: int32
+                type: integer
+              currentReplicas:
+                type: integer
+              currentRevision:
+                type: string
               image:
                 type: string
               latestGeneratedNode:
                 type: integer
+              observedGeneration:
+                format: int64
+                type: integer
               readyReplicas:
                 type: integer
               replicas:
+                type: integer
+              updateRevision:
+                type: string
+              updatedReplicas:
                 type: integer
             type: object
         type: object

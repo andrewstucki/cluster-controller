@@ -17,6 +17,7 @@ limitations under the License.
 package v1alpha1
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -57,16 +58,33 @@ func (cluster *Cluster) GetImageName() string {
 	return defaultImage
 }
 
+type ReplicatedPodSpec struct {
+	Replicas int                    `json:"replicas"`
+	PodSpec  corev1.PodTemplateSpec `json:"podSpec"`
+}
+
 // ClusterStatus defines the observed state of Cluster
 type ClusterStatus struct {
 	// +optional
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+	// +optional
 	Replicas int `json:"replicas,omitempty"`
+	// +optional
+	CurrentReplicas int `json:"currentReplicas,omitempty"`
+	// +optional
+	UpdatedReplicas int `json:"updatedReplicas,omitempty"`
 	// +optional
 	ReadyReplicas int `json:"readyReplicas,omitempty"`
 	// +optional
 	LatestGeneratedNode int `json:"latestGeneratedNode,omitempty"`
 	// +optional
 	Image string `json:"image,omitempty"`
+	// +optional
+	CollisionCount *int32 `json:"collisionCount,omitempty"`
+	// +optional
+	CurrentRevision string `json:"currentRevision,omitempty"`
+	// +optional
+	UpdateRevision string `json:"updateRevision,omitempty"`
 }
 
 // +kubebuilder:object:root=true
@@ -79,6 +97,36 @@ type Cluster struct {
 
 	Spec   ClusterSpec   `json:"spec,omitempty"`
 	Status ClusterStatus `json:"status,omitempty"`
+}
+
+func (c *Cluster) GetClusterStatus() ClusterStatus {
+	return c.Status
+}
+
+func (c *Cluster) SetClusterStatus(status ClusterStatus) {
+	c.Status = status
+}
+
+func (c *Cluster) GetReplicatedPodSpec() ReplicatedPodSpec {
+	return ReplicatedPodSpec{
+		Replicas: c.Spec.Replicas,
+		PodSpec: corev1.PodTemplateSpec{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "pod",
+			},
+			Spec: corev1.PodSpec{
+				Containers: []corev1.Container{{
+					Name:  "container",
+					Image: c.GetImageName(),
+				}},
+				RestartPolicy: corev1.RestartPolicyNever,
+			},
+		},
+	}
+}
+
+func (c *Cluster) GetReplicatedVolumeClaims() []corev1.PersistentVolumeClaim {
+	return nil
 }
 
 // +kubebuilder:object:root=true
