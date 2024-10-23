@@ -3,6 +3,7 @@ package controller
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"regexp"
@@ -10,7 +11,6 @@ import (
 	"strconv"
 
 	clusterv1alpha1 "github.com/andrewstucki/cluster-controller/api/v1alpha1"
-	"github.com/andrewstucki/cluster-controller/internal/kubernetes"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	k8sapierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -33,8 +33,9 @@ import (
 )
 
 const (
-	ownerIndex = ".metadata.controller"
-	nodeIndex  = ".spec.nodeName"
+	ownerIndex   = ".metadata.controller"
+	nodeIndex    = ".spec.nodeName"
+	clusterLabel = "cluster"
 )
 
 var (
@@ -237,37 +238,6 @@ func (r *Reconciler[T, PT]) defaultLabels() map[string]string {
 //    d. scale down waiting for stabilization in between
 //    e. rolling restart all pods
 
-func initIdentity[T ClusterObject](cluster T, pod *corev1.Pod) {
-	updateIdentity(cluster, pod)
-	pod.Spec.Hostname = pod.Name
-}
-
-func newPod[T ClusterObject](parent T, spec *clusterv1alpha1.ReplicatedPodSpec, ordinal int) *corev1.Pod {
-	pod, _ := kubernetes.GetPodFromTemplate(&spec.PodSpec, parent, metav1.NewControllerRef(parent, parent.GetObjectKind().GroupVersionKind()))
-	pod.Name = getPodName(parent, ordinal)
-	initIdentity(parent, pod)
-	updateStorage(parent, pod)
-	return pod
-}
-
-func setPodRevision(pod *corev1.Pod, revision string) {
-	if pod.Labels == nil {
-		pod.Labels = make(map[string]string)
-	}
-	pod.Labels[revisionLabel] = revision
-}
-
-func newVersionedPod[T ClusterObject](cluster T, currentSpec, updateSpec *clusterv1alpha1.ReplicatedPodSpec, currentRevision, updateRevision string, replicas, ordinal int) *corev1.Pod {
-	if ordinal < int(replicas) {
-		pod := newPod(cluster, currentSpec, ordinal)
-		setPodRevision(pod, currentRevision)
-		return pod
-	}
-	pod := newPod(cluster, updateSpec, ordinal)
-	setPodRevision(pod, updateRevision)
-	return pod
-}
-
 func (r *Reconciler[T, PT]) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
@@ -296,10 +266,12 @@ func (r *Reconciler[T, PT]) Reconcile(ctx context.Context, req ctrl.Request) (ct
 
 	currentSpec, err := revisionToSpec(currentRevision)
 	if err != nil {
+		logger.Error(err, "converting current revision to spec")
 		return ctrl.Result{}, err
 	}
 	updateSpec, err := revisionToSpec(updateRevision)
 	if err != nil {
+		logger.Error(err, "converting update revision to spec")
 		return ctrl.Result{}, err
 	}
 
@@ -309,6 +281,11 @@ func (r *Reconciler[T, PT]) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	status.UpdateRevision = updateRevision.Name
 	status.CollisionCount = new(int32)
 	*status.CollisionCount = collisionCount
+
+	syncStatus := func(err error) (ctrl.Result, error) {
+		cluster.SetClusterStatus(status)
+		return ctrl.Result{}, errors.Join(err, r.Client.Status().Update(ctx, cluster))
+	}
 
 	replicaCount := updateSpec.Replicas
 	replicas := make([]*corev1.Pod, replicaCount)
@@ -388,19 +365,20 @@ func (r *Reconciler[T, PT]) Reconcile(ctx context.Context, req ctrl.Request) (ct
 
 	if cluster.GetDeletionTimestamp() != nil {
 		// we're deleting, just update status and return
-		// TODO: status update
-		return ctrl.Result{}, nil
+		return syncStatus(nil)
 	}
 
 	for i := range replicas {
 		if replicas[i] == nil {
 			continue
 		}
-		// restart any replicas
+		// restart any replicas that have terminated
 		if isFailed(replicas[i]) || isSucceeded(replicas[i]) {
+			logger.Info("deleting stopped replica", "pod", replicas[i].Name)
 			if err := r.Client.Delete(ctx, replicas[i]); err != nil {
 				if !k8sapierrors.IsNotFound(err) {
-					return ctrl.Result{}, err
+					logger.Error(err, "while deleting stopped replica")
+					return syncStatus(err)
 				}
 			}
 			if getPodRevision(replicas[i]) == currentRevision.Name {
@@ -420,12 +398,14 @@ func (r *Reconciler[T, PT]) Reconcile(ctx context.Context, req ctrl.Request) (ct
 
 		if !isCreated(replicas[i]) {
 			if err := r.createPersistentVolumeClaims(ctx, cluster, replicas[i]); err != nil {
-				return ctrl.Result{}, err
+				logger.Error(err, "while creating persistent volume claims")
+				return syncStatus(err)
 			}
 
 			if err := r.Client.Create(ctx, replicas[i]); err != nil {
 				if !k8sapierrors.IsAlreadyExists(err) {
-					return ctrl.Result{}, err
+					logger.Error(err, "while creating replica")
+					return syncStatus(err)
 				}
 			}
 
@@ -437,20 +417,20 @@ func (r *Reconciler[T, PT]) Reconcile(ctx context.Context, req ctrl.Request) (ct
 				status.UpdatedReplicas++
 			}
 
-			return ctrl.Result{}, nil
+			return syncStatus(nil)
 		}
 
 		// If we find a Pod that is currently terminating, we must wait until graceful deletion
 		// completes before we continue to make progress.
 		if isTerminating(replicas[i]) {
-			return ctrl.Result{}, nil
+			return syncStatus(nil)
 		}
 
 		// If we have a Pod that has been created but is not running and ready we can not make progress.
 		// We must ensure that all for each Pod, when we create it, all of its predecessors, with respect to its
 		// ordinal, are Running and Ready.
 		if !isRunningAndReady(replicas[i]) {
-			return ctrl.Result{}, nil
+			return syncStatus(nil)
 		}
 
 		// Enforce the StatefulSet invariants
@@ -460,7 +440,8 @@ func (r *Reconciler[T, PT]) Reconcile(ctx context.Context, req ctrl.Request) (ct
 
 		// Make a deep copy so we don't mutate the shared cache
 		if err := r.updateStatefulPod(ctx, cluster, replicas[i].DeepCopy()); err != nil {
-			return ctrl.Result{}, err
+			logger.Error(err, "while updating pod")
+			return syncStatus(err)
 		}
 	}
 
@@ -473,14 +454,16 @@ func (r *Reconciler[T, PT]) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	if target >= 0 {
 		// wait for terminating pods to expire
 		if isTerminating(condemned[target]) {
-			return ctrl.Result{}, nil
+			return syncStatus(nil)
 		}
 		if !isRunningAndReady(condemned[target]) && condemned[target] != firstUnhealthyPod {
-			return ctrl.Result{}, nil
+			return syncStatus(nil)
 		}
 
+		logger.Info("deleting condemned replica", "pod", condemned[target].Name)
 		if err := r.Client.Delete(ctx, condemned[target]); err != nil {
-			return ctrl.Result{}, err
+			logger.Error(err, "while deleting condemned pod")
+			return syncStatus(err)
 		}
 		if getPodRevision(condemned[target]) == currentRevision.Name {
 			status.CurrentReplicas--
@@ -498,27 +481,29 @@ func (r *Reconciler[T, PT]) Reconcile(ctx context.Context, req ctrl.Request) (ct
 
 		// delete the Pod if it is not already terminating and does not match the update revision.
 		if getPodRevision(replicas[target]) != updateRevision.Name && !isTerminating(replicas[target]) {
+			logger.Info("rolling restart", "pod", replicas[target].Name)
+
 			if err := r.Client.Delete(ctx, replicas[target]); err != nil {
-				return ctrl.Result{}, err
+				logger.Error(err, "while terminating pod for rolling restart")
+				return syncStatus(err)
 			}
 			status.CurrentReplicas--
-			return ctrl.Result{}, nil
+
+			return syncStatus(nil)
 		}
 
 		// wait for unhealthy Pods on update
 		if !isHealthy(replicas[target]) {
-			return ctrl.Result{}, nil
+			return syncStatus(nil)
 		}
-
 	}
 
 	if err := r.truncateHistory(ctx, pods, revisions, currentRevision, updateRevision); err != nil {
-		return ctrl.Result{}, err
+		logger.Error(err, "while truncating cluster history")
+		return syncStatus(err)
 	}
 
-	cluster.SetClusterStatus(status)
-
-	return ctrl.Result{}, nil
+	return syncStatus(nil)
 }
 
 func (r *Reconciler[T, PT]) getClusterPods(ctx context.Context, clusterName string) ([]corev1.Pod, error) {
@@ -698,6 +683,7 @@ func (r *Reconciler[T, PT]) createControllerRevision(ctx context.Context, parent
 	for {
 		hash := hashControllerRevision(revision, collisionCount)
 		// Update the revisions name
+		clone.Namespace = parent.GetNamespace()
 		clone.Name = controllerRevisionName(parent.GetName(), hash)
 		err := r.Client.Create(ctx, clone)
 		if k8sapierrors.IsAlreadyExists(err) {
@@ -749,30 +735,6 @@ func (r *Reconciler[T, PT]) truncateHistory(
 	return nil
 }
 
-func isRunningAndReady(pod *corev1.Pod) bool {
-	return pod.Status.Phase == corev1.PodRunning && kubernetes.IsPodReady(pod)
-}
-
-func isCreated(pod *corev1.Pod) bool {
-	return pod.Status.Phase != ""
-}
-
-func isHealthy(pod *corev1.Pod) bool {
-	return isRunningAndReady(pod) && !isTerminating(pod)
-}
-
-func isFailed(pod *corev1.Pod) bool {
-	return pod.Status.Phase == corev1.PodFailed
-}
-
-func isSucceeded(pod *corev1.Pod) bool {
-	return pod.Status.Phase == corev1.PodSucceeded
-}
-
-func isTerminating(pod *corev1.Pod) bool {
-	return pod.DeletionTimestamp != nil
-}
-
 var statefulPodRegex = regexp.MustCompile("(.*)-([0-9]+)$")
 
 func getParentNameAndOrdinal(pod *corev1.Pod) (string, int) {
@@ -804,7 +766,7 @@ func identityMatches[T ClusterObject](set T, pod *corev1.Pod) bool {
 		set.GetName() == parent &&
 		pod.Name == getPodName(set, ordinal) &&
 		pod.Namespace == set.GetNamespace() &&
-		pod.Labels[revisionLabel] == pod.Name
+		pod.Labels[clusterLabel] == set.GetName()
 }
 
 func updateIdentity[T ClusterObject](set T, pod *corev1.Pod) {
@@ -813,7 +775,7 @@ func updateIdentity[T ClusterObject](set T, pod *corev1.Pod) {
 	if pod.Labels == nil {
 		pod.Labels = make(map[string]string)
 	}
-	pod.Labels[revisionLabel] = pod.Name
+	pod.Labels[clusterLabel] = set.GetName()
 }
 
 func getPersistentVolumeClaimName[T ClusterObject](set T, claim *corev1.PersistentVolumeClaim, ordinal int) string {
