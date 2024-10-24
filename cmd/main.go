@@ -145,6 +145,13 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "Cluster")
 		os.Exit(1)
 	}
+
+	hooks := controller.NewDebugHooks(mgr.GetLogger())
+
+	if err = controller.SetupNodeReconciler[clusterv1alpha1.Broker](ctx, mgr, hooks); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "Broker")
+		os.Exit(1)
+	}
 	// +kubebuilder:scaffold:builder
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {

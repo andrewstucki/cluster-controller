@@ -8,6 +8,8 @@ rules:
   - ""
   resources:
   - pods
+  - persistentvolumes
+  - persistentvolumeclaims
   verbs:
   - create
   - delete
@@ -40,6 +42,7 @@ rules:
   - cluster.lambda.coffee
   resources:
   - clusters
+  - brokers
   verbs:
   - create
   - delete
@@ -52,12 +55,14 @@ rules:
   - cluster.lambda.coffee
   resources:
   - clusters/finalizers
+  - brokers/finalizers
   verbs:
   - update
 - apiGroups:
   - cluster.lambda.coffee
   resources:
   - clusters/status
+  - brokers/status
   verbs:
   - get
   - patch
