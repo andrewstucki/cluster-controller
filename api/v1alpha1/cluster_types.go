@@ -39,30 +39,7 @@ type ClusterSpec struct {
 	// +kubebuilder:default:=1
 	Replicas int `json:"replicas"`
 	// +optional
-	SchedulerName string `json:"schedulerName,omitempty"`
-	// +optional
-	Image string `json:"image,omitempty"`
-}
-
-func (cluster *Cluster) GetImageName() string {
-	// If the image is specified in the status, use that one
-	// It should be there since the first reconciliation
-	if len(cluster.Status.Image) > 0 {
-		return cluster.Status.Image
-	}
-
-	// Fallback to the information we have in the spec
-	if len(cluster.Spec.Image) > 0 {
-		return cluster.Spec.Image
-	}
-
-	// finally use what the current controller defaults to
-	return defaultImage
-}
-
-type ReplicatedPodSpec struct {
-	Replicas int                    `json:"replicas"`
-	PodSpec  corev1.PodTemplateSpec `json:"podSpec"`
+	MinimumHealthyReplicas int `json:"minimumHealthyReplicas,omitempty"`
 }
 
 // +kubebuilder:object:root=true
@@ -73,6 +50,8 @@ type Broker struct {
 
 	Status ClusterNodeStatus `json:"status,omitempty"`
 }
+
+func (b *Broker) Merge(other *Broker) {}
 
 func (b *Broker) GetClusterNodeStatus() ClusterNodeStatus {
 	return b.Status
@@ -149,7 +128,7 @@ func (b *Broker) GetVolumeClaims() []*corev1.PersistentVolumeClaim {
 	}}
 }
 
-type NodePhase struct {
+type Phase struct {
 	// +required
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MaxLength=32768
@@ -170,13 +149,31 @@ type NodePhase struct {
 
 type ClusterNodeStatus struct {
 	// +optional
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+	// +optional
+	ClusterVersion string `json:"clusterVersion,omitempty"`
+	// +optional
 	PreviousVersion string `json:"previousVersion,omitempty"`
 	// +optional
 	CurrentVersion string `json:"currentRevision,omitempty"`
 	// +optional
-	Phase NodePhase `json:"phase,omitempty"`
+	Phase Phase `json:"phase,omitempty"`
+	// +optional
+	Running bool `json:"running,omitempty"`
+	// +optional
+	Healthy bool `json:"healthy,omitempty"`
+	// +optional
+	MatchesCluster bool `json:"matchesCluster,omitempty"`
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+}
+
+func (s *ClusterNodeStatus) SetPhase(phase Phase) {
+	s.Phase = phase
+}
+
+func (s *ClusterNodeStatus) GetPhase() Phase {
+	return s.Phase
 }
 
 // ClusterStatus defines the observed state of Cluster
@@ -186,21 +183,23 @@ type ClusterStatus struct {
 	// +optional
 	Replicas int `json:"replicas,omitempty"`
 	// +optional
-	CurrentReplicas int `json:"currentReplicas,omitempty"`
+	UpToDateReplicas int `json:"upToDateReplicas,omitempty"`
 	// +optional
-	UpdatedReplicas int `json:"updatedReplicas,omitempty"`
+	HealthyReplicas int `json:"healthyReplicas,omitempty"`
 	// +optional
 	ReadyReplicas int `json:"readyReplicas,omitempty"`
 	// +optional
-	LatestGeneratedNode int `json:"latestGeneratedNode,omitempty"`
+	Phase Phase `json:"phase,omitempty"`
 	// +optional
-	Image string `json:"image,omitempty"`
-	// +optional
-	CollisionCount *int32 `json:"collisionCount,omitempty"`
-	// +optional
-	CurrentRevision string `json:"currentRevision,omitempty"`
-	// +optional
-	UpdateRevision string `json:"updateRevision,omitempty"`
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
+}
+
+func (s *ClusterStatus) SetPhase(phase Phase) {
+	s.Phase = phase
+}
+
+func (s *ClusterStatus) GetPhase() Phase {
+	return s.Phase
 }
 
 // +kubebuilder:object:root=true
@@ -215,34 +214,36 @@ type Cluster struct {
 	Status ClusterStatus `json:"status,omitempty"`
 }
 
+func (c *Cluster) GetClusterNode() *Broker {
+	return &Broker{
+		TypeMeta: metav1.TypeMeta{
+			Kind:       "Broker",
+			APIVersion: GroupVersion.String(),
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "broker",
+		},
+	}
+}
+
+func (c *Cluster) GetReplicas() int {
+	return c.Spec.Replicas
+}
+
+func (c *Cluster) GetMinimumHealthyReplicas() int {
+	return c.Spec.MinimumHealthyReplicas
+}
+
+func (c *Cluster) GetNodeHash() (string, error) {
+	return "immutable", nil
+}
+
 func (c *Cluster) GetClusterStatus() ClusterStatus {
 	return c.Status
 }
 
 func (c *Cluster) SetClusterStatus(status ClusterStatus) {
 	c.Status = status
-}
-
-func (c *Cluster) GetReplicatedPodSpec() ReplicatedPodSpec {
-	return ReplicatedPodSpec{
-		Replicas: c.Spec.Replicas,
-		PodSpec: corev1.PodTemplateSpec{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: "pod",
-			},
-			Spec: corev1.PodSpec{
-				Containers: []corev1.Container{{
-					Name:  "container",
-					Image: c.GetImageName(),
-				}},
-				RestartPolicy: corev1.RestartPolicyNever,
-			},
-		},
-	}
-}
-
-func (c *Cluster) GetReplicatedVolumeClaims() []corev1.PersistentVolumeClaim {
-	return nil
 }
 
 // +kubebuilder:object:root=true

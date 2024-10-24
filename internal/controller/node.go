@@ -49,54 +49,54 @@ type LifecycleHook[T, U any] interface {
 	After(ctx context.Context, t T, u U) error
 }
 
-type ModifiedObjects struct {
+type ModifiedNodeObjects struct {
 	Pod  *corev1.Pod
 	PVs  []*corev1.PersistentVolume
 	PVCs []*corev1.PersistentVolumeClaim
 }
 
-type debugHook struct {
+type debugNodeHook struct {
 	operation string
 	logger    logr.Logger
 }
 
-func (h *debugHook) Before(ctx context.Context, node ClusterNodeObject, modified *ModifiedObjects) error {
+func (h *debugNodeHook) Before(ctx context.Context, node ClusterNodeObject, modified *ModifiedNodeObjects) error {
 	h.logger.Info("before "+h.operation, "modified", modified)
 	return nil
 }
 
-func (h *debugHook) After(ctx context.Context, node ClusterNodeObject, modified *ModifiedObjects) error {
+func (h *debugNodeHook) After(ctx context.Context, node ClusterNodeObject, modified *ModifiedNodeObjects) error {
 	h.logger.Info("after "+h.operation, "modified", modified)
 	return nil
 }
 
-func NewDebugHooks(logger logr.Logger) *ClusterNodeHooks {
+func NewDebugNodeHooks(logger logr.Logger) *ClusterNodeHooks {
 	return &ClusterNodeHooks{
-		Create: &debugHook{operation: "create", logger: logger},
-		Delete: &debugHook{operation: "delete", logger: logger},
+		Create: &debugNodeHook{operation: "create", logger: logger},
+		Delete: &debugNodeHook{operation: "delete", logger: logger},
 	}
 }
 
 type ClusterNodeHooks struct {
-	Create LifecycleHook[ClusterNodeObject, *ModifiedObjects]
-	Delete LifecycleHook[ClusterNodeObject, *ModifiedObjects]
+	Create LifecycleHook[ClusterNodeObject, *ModifiedNodeObjects]
+	Delete LifecycleHook[ClusterNodeObject, *ModifiedNodeObjects]
 }
 
-func runNodeLifecycleBeforeHook(ctx context.Context, node ClusterNodeObject, modified *ModifiedObjects, hook LifecycleHook[ClusterNodeObject, *ModifiedObjects]) error {
+func runNodeLifecycleBeforeHook(ctx context.Context, node ClusterNodeObject, modified *ModifiedNodeObjects, hook LifecycleHook[ClusterNodeObject, *ModifiedNodeObjects]) error {
 	if hook == nil {
 		return nil
 	}
 	return runNodeLifecycleHook(ctx, node, modified, hook.Before)
 }
 
-func runNodeLifecycleAfterHook(ctx context.Context, node ClusterNodeObject, modified *ModifiedObjects, hook LifecycleHook[ClusterNodeObject, *ModifiedObjects]) error {
+func runNodeLifecycleAfterHook(ctx context.Context, node ClusterNodeObject, modified *ModifiedNodeObjects, hook LifecycleHook[ClusterNodeObject, *ModifiedNodeObjects]) error {
 	if hook == nil {
 		return nil
 	}
 	return runNodeLifecycleHook(ctx, node, modified, hook.After)
 }
 
-func runNodeLifecycleHook(ctx context.Context, node ClusterNodeObject, modified *ModifiedObjects, hook func(ctx context.Context, node ClusterNodeObject, modified *ModifiedObjects) error) error {
+func runNodeLifecycleHook(ctx context.Context, node ClusterNodeObject, modified *ModifiedNodeObjects, hook func(ctx context.Context, node ClusterNodeObject, modified *ModifiedNodeObjects) error) error {
 	if hook == nil {
 		return nil
 	}
@@ -185,9 +185,18 @@ func (r *NodeReconciler[T, PT]) Reconcile(ctx context.Context, req ctrl.Request)
 
 	originalStatus := node.GetClusterNodeStatus()
 	status := originalStatus.DeepCopy()
+	status.ObservedGeneration = node.GetGeneration()
+
+	// set our cluster version immediately
+	status.ClusterVersion = getHash(node)
+	// if we don't match, overwrite our current matching status
+	// which will only get updated when we've fully stabilized
+	if originalStatus.ClusterVersion != status.ClusterVersion {
+		status.MatchesCluster = false
+	}
 
 	syncStatus := func(err error) (ctrl.Result, error) {
-		updated := isStatusDirty(&originalStatus, status)
+		updated := isNodeStatusDirty(&originalStatus, status)
 		for _, condition := range []metav1.Condition{
 			synchronizationCondition(node, err),
 		} {
@@ -234,7 +243,7 @@ func (r *NodeReconciler[T, PT]) Reconcile(ctx context.Context, req ctrl.Request)
 
 	// we now know we have a single pod, do the management work for it
 	pod := pods[0]
-	podVersion := getPodVersion(pod)
+	podVersion := getHash(pod)
 	if podVersion == "" || podVersion != status.CurrentVersion {
 		if err := r.decommissionPod(ctx, status, node, pod); err != nil {
 			logger.Error(err, "decommissioning pod with non-current version", "version", podVersion)
@@ -277,6 +286,8 @@ func (r *NodeReconciler[T, PT]) Reconcile(ctx context.Context, req ctrl.Request)
 
 	// if everything worked out and we have a ready pod, then mark the node as such
 	if isPodReady(pod) {
+		// we have a one way operation of setting this as fully ready for the current cluster
+		status.MatchesCluster = true
 		setPhase(node, status, readyPhase("cluster node ready"))
 	}
 
@@ -315,7 +326,7 @@ func (r *NodeReconciler[T, PT]) ensurePersistentVolumes(ctx context.Context, sta
 	}
 	sortCreation(volumes)
 
-	modifying := &ModifiedObjects{
+	modifying := &ModifiedNodeObjects{
 		PVs: volumes,
 	}
 
@@ -386,7 +397,7 @@ func (r *NodeReconciler[T, PT]) createPod(ctx context.Context, status *clusterv1
 	}
 	claims = sortCreation(claims)
 
-	modifying := &ModifiedObjects{
+	modifying := &ModifiedNodeObjects{
 		Pod:  pod,
 		PVCs: claims,
 	}
@@ -423,7 +434,7 @@ func (r *NodeReconciler[T, PT]) decommissionPVCs(ctx context.Context, status *cl
 
 	setPhase(node, status, decommissioningPhase(fmt.Sprintf("decommissioning persistent volume claims: (%s)", strings.Join(claims, ", "))))
 
-	modifying := &ModifiedObjects{
+	modifying := &ModifiedNodeObjects{
 		PVCs: pvcs,
 	}
 	if err := runNodeLifecycleBeforeHook(ctx, node, modifying, r.hooks.Delete); err != nil {
@@ -458,7 +469,7 @@ func (r *NodeReconciler[T, PT]) decommissionPVs(ctx context.Context, status *clu
 
 	setPhase(node, status, decommissioningPhase(fmt.Sprintf("decommissioning persistent volumes: (%s)", strings.Join(volumes, ", "))))
 
-	modifying := &ModifiedObjects{
+	modifying := &ModifiedNodeObjects{
 		PVs: pvs,
 	}
 	if err := runNodeLifecycleBeforeHook(ctx, node, modifying, r.hooks.Delete); err != nil {
@@ -488,7 +499,7 @@ func (r *NodeReconciler[T, PT]) decommissionPVs(ctx context.Context, status *clu
 func (r *NodeReconciler[T, PT]) decommissionPod(ctx context.Context, status *clusterv1alpha1.ClusterNodeStatus, node PT, pod *corev1.Pod) error {
 	setPhase(node, status, decommissioningPhase(fmt.Sprintf("decommissioning pod: %s/%s", pod.Namespace, pod.Name)))
 
-	modifying := &ModifiedObjects{
+	modifying := &ModifiedNodeObjects{
 		Pod: pod,
 	}
 	if err := runNodeLifecycleBeforeHook(ctx, node, modifying, r.hooks.Delete); err != nil {
@@ -511,7 +522,7 @@ func (r *NodeReconciler[T, PT]) decommissionPod(ctx context.Context, status *clu
 func (r *NodeReconciler[T, PT]) restartPod(ctx context.Context, status *clusterv1alpha1.ClusterNodeStatus, node PT, pod *corev1.Pod) error {
 	setPhase(node, status, restartingPhase(fmt.Sprintf("restarting pod: %s/%s", pod.Namespace, pod.Name)))
 
-	modifying := &ModifiedObjects{
+	modifying := &ModifiedNodeObjects{
 		Pod: pod,
 	}
 	if err := runNodeLifecycleBeforeHook(ctx, node, modifying, r.hooks.Delete); err != nil {
@@ -672,7 +683,6 @@ func initPod(node ClusterNodeObject, pod *corev1.Pod, claims map[string]*corev1.
 	pod.Name = node.GetName()
 	pod.Namespace = node.GetNamespace()
 	pod.Labels[hashLabel] = hash
-	pod.Labels[hashLabel] = hash
 
 	volumes := []corev1.Volume{}
 	for _, volume := range pod.Spec.Volumes {
@@ -722,11 +732,12 @@ func initVolume(node ClusterNodeObject, volume *corev1.PersistentVolume) error {
 	return nil
 }
 
-func getPodVersion(pod *corev1.Pod) string {
-	if pod.Labels == nil {
+func getHash(o client.Object) string {
+	labels := o.GetLabels()
+	if labels == nil {
 		return ""
 	}
-	return pod.Labels[hashLabel]
+	return labels[hashLabel]
 }
 
 func hashPodTemplate(node ClusterNodeObject) (string, error) {
@@ -755,14 +766,19 @@ func hashPodTemplate(node ClusterNodeObject) (string, error) {
 	return rand.SafeEncodeString(fmt.Sprint(hf.Sum32())), nil
 }
 
-func setPhase(node ClusterNodeObject, status *clusterv1alpha1.ClusterNodeStatus, phase clusterv1alpha1.NodePhase) {
-	if status.Phase.Name == phase.Name && status.Phase.Message == phase.Message && status.Phase.ObservedGeneration == node.GetGeneration() {
+type phasedStatus interface {
+	SetPhase(phase clusterv1alpha1.Phase)
+	GetPhase() clusterv1alpha1.Phase
+}
+
+func setPhase(o client.Object, status phasedStatus, phase clusterv1alpha1.Phase) {
+	if status.GetPhase().Name == phase.Name && status.GetPhase().Message == phase.Message && status.GetPhase().ObservedGeneration == o.GetGeneration() {
 		return
 	}
 
 	phase.LastTransitionTime = metav1.Now()
-	phase.ObservedGeneration = node.GetGeneration()
-	status.Phase = phase
+	phase.ObservedGeneration = o.GetGeneration()
+	status.SetPhase(phase)
 }
 
 func synchronizationCondition(node ClusterNodeObject, err error) metav1.Condition {
@@ -784,34 +800,48 @@ func synchronizationCondition(node ClusterNodeObject, err error) metav1.Conditio
 	}
 }
 
-func decommissioningPhase(message string) clusterv1alpha1.NodePhase {
-	return clusterv1alpha1.NodePhase{
+func decommissioningPhase(message string) clusterv1alpha1.Phase {
+	return clusterv1alpha1.Phase{
 		Name:    "Decommissioning",
 		Message: message,
 	}
 }
 
-func restartingPhase(message string) clusterv1alpha1.NodePhase {
-	return clusterv1alpha1.NodePhase{
+func gatedPhase(message string) clusterv1alpha1.Phase {
+	return clusterv1alpha1.Phase{
+		Name:    "Gated",
+		Message: message,
+	}
+}
+
+func restartingPhase(message string) clusterv1alpha1.Phase {
+	return clusterv1alpha1.Phase{
 		Name:    "Restarting",
 		Message: message,
 	}
 }
 
-func readyPhase(message string) clusterv1alpha1.NodePhase {
-	return clusterv1alpha1.NodePhase{
+func updatingPhase(message string) clusterv1alpha1.Phase {
+	return clusterv1alpha1.Phase{
+		Name:    "Updating",
+		Message: message,
+	}
+}
+
+func readyPhase(message string) clusterv1alpha1.Phase {
+	return clusterv1alpha1.Phase{
 		Name:    "Ready",
 		Message: message,
 	}
 }
 
-func initializingPhase(message string) clusterv1alpha1.NodePhase {
-	return clusterv1alpha1.NodePhase{
+func initializingPhase(message string) clusterv1alpha1.Phase {
+	return clusterv1alpha1.Phase{
 		Name:    "Initializing",
 		Message: message,
 	}
 }
 
-func isStatusDirty(a, b *clusterv1alpha1.ClusterNodeStatus) bool {
-	return a.Phase != b.Phase || a.CurrentVersion != b.CurrentVersion || a.PreviousVersion != b.PreviousVersion
+func isNodeStatusDirty(a, b *clusterv1alpha1.ClusterNodeStatus) bool {
+	return a.ObservedGeneration != b.ObservedGeneration || a.MatchesCluster != b.MatchesCluster || a.ClusterVersion != b.ClusterVersion || a.Phase != b.Phase || a.CurrentVersion != b.CurrentVersion || a.PreviousVersion != b.PreviousVersion
 }

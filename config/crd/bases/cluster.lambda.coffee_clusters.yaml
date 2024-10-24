@@ -43,41 +43,45 @@ spec:
           spec:
             description: ClusterSpec defines the desired state of Cluster
             properties:
-              image:
-                type: string
+              minimumHealthyReplicas:
+                type: integer
               replicas:
                 default: 1
                 minimum: 1
                 type: integer
-              schedulerName:
-                type: string
             required:
             - replicas
             type: object
           status:
             description: ClusterStatus defines the observed state of Cluster
             properties:
-              collisionCount:
-                format: int32
+              healthyReplicas:
                 type: integer
-              currentReplicas:
-                type: integer
-              currentRevision:
-                type: string
-              image:
-                type: string
-              latestGeneratedNode:
-                type: integer
-              observedGeneration:
-                format: int64
-                type: integer
+              phase:
+                properties:
+                  lastTransitionTime:
+                    format: date-time
+                    type: string
+                  message:
+                    maxLength: 32768
+                    type: string
+                  name:
+                    maxLength: 32768
+                    type: string
+                  observedGeneration:
+                    format: int64
+                    minimum: 0
+                    type: integer
+                required:
+                - lastTransitionTime
+                - message
+                - name
+                type: object
               readyReplicas:
                 type: integer
               replicas:
                 type: integer
-              updateRevision:
-                type: string
-              updatedReplicas:
+              upToDateReplicas:
                 type: integer
             type: object
         type: object

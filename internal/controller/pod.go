@@ -3,7 +3,6 @@ package controller
 import (
 	"fmt"
 
-	clusterv1alpha1 "github.com/andrewstucki/cluster-controller/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	apimachineryvalidation "k8s.io/apimachinery/pkg/api/validation"
@@ -11,38 +10,6 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 )
-
-func initIdentity[T ClusterObject](cluster T, pod *corev1.Pod) {
-	updateIdentity(cluster, pod)
-	pod.Spec.Hostname = pod.Name
-}
-
-func newPod[T ClusterObject](parent T, spec *clusterv1alpha1.ReplicatedPodSpec, ordinal int) *corev1.Pod {
-	pod, _ := getPodFromTemplate(&spec.PodSpec, parent, metav1.NewControllerRef(parent, parent.GetObjectKind().GroupVersionKind()))
-	pod.Name = getPodName(parent, ordinal)
-	pod.Namespace = parent.GetNamespace()
-	initIdentity(parent, pod)
-	updateStorage(parent, pod)
-	return pod
-}
-
-func setPodRevision(pod *corev1.Pod, revision string) {
-	if pod.Labels == nil {
-		pod.Labels = make(map[string]string)
-	}
-	pod.Labels[revisionLabel] = revision
-}
-
-func newVersionedPod[T ClusterObject](cluster T, currentSpec, updateSpec *clusterv1alpha1.ReplicatedPodSpec, currentRevision, updateRevision string, replicas, ordinal int) *corev1.Pod {
-	if ordinal < int(replicas) {
-		pod := newPod(cluster, currentSpec, ordinal)
-		setPodRevision(pod, currentRevision)
-		return pod
-	}
-	pod := newPod(cluster, updateSpec, ordinal)
-	setPodRevision(pod, updateRevision)
-	return pod
-}
 
 func isRunningAndReady(pod *corev1.Pod) bool {
 	return pod.Status.Phase == corev1.PodRunning && isPodReady(pod)

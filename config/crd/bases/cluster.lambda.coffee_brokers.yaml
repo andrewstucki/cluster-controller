@@ -37,6 +37,8 @@ spec:
             type: object
           status:
             properties:
+              clusterVersion:
+                type: string
               conditions:
                 items:
                   description: "Condition contains details for one aspect of the current
@@ -108,6 +110,10 @@ spec:
                 type: array
               currentRevision:
                 type: string
+              healthy:
+                type: boolean
+              matchesCluster:
+                type: boolean
               phase:
                 properties:
                   lastTransitionTime:
@@ -130,6 +136,8 @@ spec:
                 type: object
               previousVersion:
                 type: string
+              running:
+                type: boolean
             type: object
         type: object
     served: true
