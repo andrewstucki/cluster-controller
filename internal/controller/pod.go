@@ -15,10 +15,6 @@ func isRunningAndReady(pod *corev1.Pod) bool {
 	return pod.Status.Phase == corev1.PodRunning && isPodReady(pod)
 }
 
-func isCreated(pod *corev1.Pod) bool {
-	return pod.Status.Phase != ""
-}
-
 func isHealthy(pod *corev1.Pod) bool {
 	return isRunningAndReady(pod) && !isTerminating(pod)
 }

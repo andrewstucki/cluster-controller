@@ -141,12 +141,14 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err = controller.SetupClusterReconciler[clusterv1alpha1.Cluster, clusterv1alpha1.Broker](ctx, mgr, controller.NewDebugClusterHooks[clusterv1alpha1.Cluster, clusterv1alpha1.Broker](mgr.GetLogger())); err != nil {
+	clusterHooks := controller.NewDebugClusterHooks[clusterv1alpha1.Cluster, clusterv1alpha1.Broker](mgr.GetLogger())
+	if err = controller.SetupClusterReconciler(ctx, mgr, clusterHooks); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Cluster")
 		os.Exit(1)
 	}
 
-	if err = controller.SetupNodeReconciler[clusterv1alpha1.Broker](ctx, mgr, controller.NewDebugNodeHooks(mgr.GetLogger())); err != nil {
+	nodeHooks := controller.NewDebugNodeHooks[clusterv1alpha1.Broker](mgr.GetLogger())
+	if err = controller.SetupNodeReconciler(ctx, mgr, nodeHooks); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Broker")
 		os.Exit(1)
 	}

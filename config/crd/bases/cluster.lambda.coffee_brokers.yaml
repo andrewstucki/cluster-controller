@@ -14,7 +14,24 @@ spec:
     singular: broker
   scope: Namespaced
   versions:
-  - name: v1alpha1
+  - additionalPrinterColumns:
+    - jsonPath: .metadata.labels['cluster-name']
+      name: Cluster
+      type: string
+    - jsonPath: .status.phase.name
+      name: Phase
+      type: string
+    - jsonPath: .status.phase.message
+      name: Message
+      priority: 1
+      type: string
+    - jsonPath: .status.running
+      name: Running
+      type: boolean
+    - jsonPath: .status.healthy
+      name: Healthy
+      type: boolean
+    name: v1alpha1
     schema:
       openAPIV3Schema:
         properties:
@@ -114,6 +131,9 @@ spec:
                 type: boolean
               matchesCluster:
                 type: boolean
+              observedGeneration:
+                format: int64
+                type: integer
               phase:
                 properties:
                   lastTransitionTime:

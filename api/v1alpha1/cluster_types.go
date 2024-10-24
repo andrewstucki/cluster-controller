@@ -44,6 +44,11 @@ type ClusterSpec struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:printcolumn:name="Cluster",type="string",JSONPath=`.metadata.labels['cluster-name']`
+// +kubebuilder:printcolumn:name="Phase",type="string",JSONPath=`.status.phase.name`
+// +kubebuilder:printcolumn:name="Message",type="string",priority=1,JSONPath=`.status.phase.message`
+// +kubebuilder:printcolumn:name="Running",type="boolean",JSONPath=`.status.running`
+// +kubebuilder:printcolumn:name="Healthy",type="boolean",JSONPath=`.status.healthy`
 type Broker struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
@@ -183,11 +188,13 @@ type ClusterStatus struct {
 	// +optional
 	Replicas int `json:"replicas,omitempty"`
 	// +optional
+	OutOfDateReplicas int `json:"outOfDateReplicas,omitempty"`
+	// +optional
 	UpToDateReplicas int `json:"upToDateReplicas,omitempty"`
 	// +optional
 	HealthyReplicas int `json:"healthyReplicas,omitempty"`
 	// +optional
-	ReadyReplicas int `json:"readyReplicas,omitempty"`
+	RunningReplicas int `json:"runningReplicas,omitempty"`
 	// +optional
 	Phase Phase `json:"phase,omitempty"`
 	// +optional
@@ -204,7 +211,13 @@ func (s *ClusterStatus) GetPhase() Phase {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:printcolumn:name="Children",type="integer",JSONPath=`.status.children`
+// +kubebuilder:printcolumn:name="Replicas",type="integer",JSONPath=`.status.replicas`
+// +kubebuilder:printcolumn:name="Running Nodes",type="integer",JSONPath=`.status.runningReplicas`
+// +kubebuilder:printcolumn:name="Healthy Nodes",type="integer",JSONPath=`.status.healthyReplicas`
+// +kubebuilder:printcolumn:name="Phase",type="string",JSONPath=`.status.phase.name`
+// +kubebuilder:printcolumn:name="Message",type="string",priority=1,JSONPath=`.status.phase.message`
+// +kubebuilder:printcolumn:name="Up-to-date Nodes",type="integer",priority=1,JSONPath=`.status.upToDateReplicas`
+// +kubebuilder:printcolumn:name="Out-of-date Nodes",type="integer",priority=1,JSONPath=`.status.outOfDateReplicas`
 // Cluster is the Schema for the Clusters API
 type Cluster struct {
 	metav1.TypeMeta   `json:",inline"`

@@ -150,6 +150,11 @@ func (r *ClusterReconciler[T, U, PU, PT]) Reconcile(ctx context.Context, req ctr
 	originalStatus := cluster.GetClusterStatus()
 	status := originalStatus.DeepCopy()
 	status.ObservedGeneration = cluster.GetGeneration()
+	status.Replicas = 0
+	status.RunningReplicas = 0
+	status.HealthyReplicas = 0
+	status.UpToDateReplicas = 0
+	status.OutOfDateReplicas = 0
 
 	syncStatus := func(err error) (ctrl.Result, error) {
 		updated := isClusterStatusDirty(&originalStatus, status)
@@ -169,20 +174,28 @@ func (r *ClusterReconciler[T, U, PU, PT]) Reconcile(ctx context.Context, req ctr
 	}
 
 	// General implementation:
-	// 1. Create a controller resource version snapshot for the current CRD
-	// 2. Pull the last
-	// 3. If an update is needed:
-	//    a. scale up to final desired state with old snapshot
-	//    b. restart any failed pods
-	//    c. wait until everything stabilizes
-	//    d. scale down waiting for stabilization in between
-	//    e. rolling restart all pods
+	// 1. grab all nodes for the cluster
+	// 2. see if we need to scale down
+	// 3. scale down starting with either the newest node or an unhealthy node
+	// 4. rolling restart all nodes if we meet the rollout threshold
+	// 5. scale up to desired size
 
 	unhealthyNodes := []PU{}
 	for _, node := range nodes {
-		if !node.GetClusterNodeStatus().Healthy {
+		if isNodeStale(node, hash) {
+			status.OutOfDateReplicas++
+		}
+		if isNodeUpdated(node, hash) {
+			status.UpToDateReplicas++
+		}
+		if isNodeRunning(node) {
+			status.RunningReplicas++
+		}
+		if isNodeHealthy(node) {
+			status.HealthyReplicas++
 			unhealthyNodes = append(unhealthyNodes, node)
 		}
+		status.Replicas++
 	}
 
 	desiredReplicas := cluster.GetReplicas()
@@ -212,7 +225,7 @@ func (r *ClusterReconciler[T, U, PU, PT]) Reconcile(ctx context.Context, req ctr
 
 	// first check if we have a pending update
 	for _, node := range nodes {
-		if getHash(node) == hash && !node.GetClusterNodeStatus().MatchesCluster {
+		if isNodeUpdating(node, hash) {
 			// we have a pending update, just wait
 			return syncStatus(nil)
 		}
@@ -241,13 +254,15 @@ func (r *ClusterReconciler[T, U, PU, PT]) Reconcile(ctx context.Context, req ctr
 
 	// we've now decommissioned any superfluous nodes, and rolling restarted, now we handle scale up
 	if len(nodes) < desiredReplicas {
-		if err := r.createNode(ctx, status, cluster, len(nodes), hash); err != nil {
+		if err := r.createNode(ctx, status, cluster, hash); err != nil {
 			logger.Error(err, "creating node")
 			return syncStatus(err)
 		}
-		// we've deleted a node replica, so try again
+		// we've created a node, so try again
 		return syncStatus(nil)
 	}
+
+	setPhase(cluster, status, readyPhase("cluster ready"))
 
 	return syncStatus(nil)
 }
@@ -273,9 +288,9 @@ func (r *ClusterReconciler[T, U, PU, PT]) decommissionNode(ctx context.Context, 
 	return nil
 }
 
-func (r *ClusterReconciler[T, U, PU, PT]) createNode(ctx context.Context, status *clusterv1alpha1.ClusterStatus, cluster PT, ordinal int, hash string) error {
+func (r *ClusterReconciler[T, U, PU, PT]) createNode(ctx context.Context, status *clusterv1alpha1.ClusterStatus, cluster PT, hash string) error {
 	node := cluster.GetClusterNode()
-	initNode(cluster, node, ordinal, hash)
+	initNode(cluster, node, hash)
 
 	setPhase(cluster, status, initializingPhase(fmt.Sprintf("creating node \"%s/%s\"", node.GetNamespace(), node.GetName())))
 
@@ -297,7 +312,7 @@ func (r *ClusterReconciler[T, U, PU, PT]) createNode(ctx context.Context, status
 
 func (r *ClusterReconciler[T, U, PU, PT]) updateNode(ctx context.Context, status *clusterv1alpha1.ClusterStatus, cluster PT, node PU, hash string) error {
 	updated := cluster.GetClusterNode()
-	initNode(cluster, updated, 0, hash)
+	initNode(cluster, updated, hash)
 	updated.SetName(node.GetName())
 
 	if merger, ok := reflect.ValueOf(node).Interface().(mergableNode[U, PU]); ok {
@@ -328,9 +343,11 @@ func (r *ClusterReconciler[T, U, PU, PT]) updateNode(ctx context.Context, status
 	return nil
 }
 
-func initNode[T, U any, PU ptrToClusterNode[U], PT ptrToCluster[T, U, PU]](cluster PT, node PU, ordinal int, hash string) {
-	node.SetName(cluster.GetName() + fmt.Sprintf("-%d", ordinal))
+func initNode[T, U any, PU ptrToClusterNode[U], PT ptrToCluster[T, U, PU]](cluster PT, node PU, hash string) {
+	node.SetName(cluster.GetName() + fmt.Sprintf("-%s", rand.String(8)))
 	node.SetNamespace(cluster.GetNamespace())
+
+	node.SetOwnerReferences([]metav1.OwnerReference{*metav1.NewControllerRef(cluster, cluster.GetObjectKind().GroupVersionKind())})
 
 	labels := node.GetLabels()
 	if labels == nil {
@@ -338,6 +355,7 @@ func initNode[T, U any, PU ptrToClusterNode[U], PT ptrToCluster[T, U, PU]](clust
 	}
 
 	labels[hashLabel] = hash
+	labels[clusterLabel] = cluster.GetName()
 	node.SetLabels(labels)
 }
 
@@ -386,5 +404,25 @@ func (r *ClusterReconciler[T, U, PU, PT]) getClusterNodes(ctx context.Context, c
 }
 
 func isClusterStatusDirty(a, b *clusterv1alpha1.ClusterStatus) bool {
-	return a.ObservedGeneration != b.ObservedGeneration || a.Replicas != b.Replicas || a.UpToDateReplicas != b.UpToDateReplicas || a.Phase != b.Phase || a.HealthyReplicas != b.HealthyReplicas || a.ReadyReplicas != b.ReadyReplicas
+	return a.ObservedGeneration != b.ObservedGeneration || a.Replicas != b.Replicas || a.UpToDateReplicas != b.UpToDateReplicas || a.Phase != b.Phase || a.HealthyReplicas != b.HealthyReplicas || a.RunningReplicas != b.RunningReplicas
+}
+
+func isNodeUpdating[T any, PT ptrToClusterNode[T]](node PT, hash string) bool {
+	return getHash(node) == hash && (node.GetClusterNodeStatus().ClusterVersion != hash || !node.GetClusterNodeStatus().MatchesCluster)
+}
+
+func isNodeUpdated[T any, PT ptrToClusterNode[T]](node PT, hash string) bool {
+	return getHash(node) == hash && node.GetClusterNodeStatus().ClusterVersion == hash && node.GetClusterNodeStatus().MatchesCluster
+}
+
+func isNodeStale[T any, PT ptrToClusterNode[T]](node PT, hash string) bool {
+	return getHash(node) != hash
+}
+
+func isNodeHealthy[T any, PT ptrToClusterNode[T]](node PT) bool {
+	return node.GetClusterNodeStatus().Healthy
+}
+
+func isNodeRunning[T any, PT ptrToClusterNode[T]](node PT) bool {
+	return node.GetClusterNodeStatus().Running
 }

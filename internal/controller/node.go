@@ -25,11 +25,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
-const (
-	fieldOwner client.FieldOwner = "cluster-node-controller"
-	hashLabel  string            = "cluster-node-hash"
-)
-
 type ptrToClusterNode[T any] interface {
 	ClusterNodeObject
 	*T
@@ -55,48 +50,48 @@ type ModifiedNodeObjects struct {
 	PVCs []*corev1.PersistentVolumeClaim
 }
 
-type debugNodeHook struct {
+type debugNodeHook[U any, PU ptrToClusterNode[U]] struct {
 	operation string
 	logger    logr.Logger
 }
 
-func (h *debugNodeHook) Before(ctx context.Context, node ClusterNodeObject, modified *ModifiedNodeObjects) error {
+func (h *debugNodeHook[U, PU]) Before(ctx context.Context, node PU, modified *ModifiedNodeObjects) error {
 	h.logger.Info("before "+h.operation, "modified", modified)
 	return nil
 }
 
-func (h *debugNodeHook) After(ctx context.Context, node ClusterNodeObject, modified *ModifiedNodeObjects) error {
+func (h *debugNodeHook[U, PU]) After(ctx context.Context, node PU, modified *ModifiedNodeObjects) error {
 	h.logger.Info("after "+h.operation, "modified", modified)
 	return nil
 }
 
-func NewDebugNodeHooks(logger logr.Logger) *ClusterNodeHooks {
-	return &ClusterNodeHooks{
-		Create: &debugNodeHook{operation: "create", logger: logger},
-		Delete: &debugNodeHook{operation: "delete", logger: logger},
+func NewDebugNodeHooks[U any, PU ptrToClusterNode[U]](logger logr.Logger) *ClusterNodeHooks[U, PU] {
+	return &ClusterNodeHooks[U, PU]{
+		Create: &debugNodeHook[U, PU]{operation: "create", logger: logger},
+		Delete: &debugNodeHook[U, PU]{operation: "delete", logger: logger},
 	}
 }
 
-type ClusterNodeHooks struct {
-	Create LifecycleHook[ClusterNodeObject, *ModifiedNodeObjects]
-	Delete LifecycleHook[ClusterNodeObject, *ModifiedNodeObjects]
+type ClusterNodeHooks[U any, PU ptrToClusterNode[U]] struct {
+	Create LifecycleHook[PU, *ModifiedNodeObjects]
+	Delete LifecycleHook[PU, *ModifiedNodeObjects]
 }
 
-func runNodeLifecycleBeforeHook(ctx context.Context, node ClusterNodeObject, modified *ModifiedNodeObjects, hook LifecycleHook[ClusterNodeObject, *ModifiedNodeObjects]) error {
+func runNodeLifecycleBeforeHook[U any, PU ptrToClusterNode[U]](ctx context.Context, node PU, modified *ModifiedNodeObjects, hook LifecycleHook[PU, *ModifiedNodeObjects]) error {
 	if hook == nil {
 		return nil
 	}
 	return runNodeLifecycleHook(ctx, node, modified, hook.Before)
 }
 
-func runNodeLifecycleAfterHook(ctx context.Context, node ClusterNodeObject, modified *ModifiedNodeObjects, hook LifecycleHook[ClusterNodeObject, *ModifiedNodeObjects]) error {
+func runNodeLifecycleAfterHook[U any, PU ptrToClusterNode[U]](ctx context.Context, node PU, modified *ModifiedNodeObjects, hook LifecycleHook[PU, *ModifiedNodeObjects]) error {
 	if hook == nil {
 		return nil
 	}
 	return runNodeLifecycleHook(ctx, node, modified, hook.After)
 }
 
-func runNodeLifecycleHook(ctx context.Context, node ClusterNodeObject, modified *ModifiedNodeObjects, hook func(ctx context.Context, node ClusterNodeObject, modified *ModifiedNodeObjects) error) error {
+func runNodeLifecycleHook[U any, PU ptrToClusterNode[U]](ctx context.Context, node PU, modified *ModifiedNodeObjects, hook func(ctx context.Context, node PU, modified *ModifiedNodeObjects) error) error {
 	if hook == nil {
 		return nil
 	}
@@ -107,13 +102,13 @@ type NodeReconciler[T any, PT ptrToClusterNode[T]] struct {
 	client.Client
 	Scheme *runtime.Scheme
 
-	hooks       *ClusterNodeHooks
+	hooks       *ClusterNodeHooks[T, PT]
 	indexPrefix string
 }
 
-func SetupNodeReconciler[T any, PT ptrToClusterNode[T]](ctx context.Context, mgr ctrl.Manager, hooks *ClusterNodeHooks) error {
+func SetupNodeReconciler[T any, PT ptrToClusterNode[T]](ctx context.Context, mgr ctrl.Manager, hooks *ClusterNodeHooks[T, PT]) error {
 	if hooks == nil {
-		hooks = &ClusterNodeHooks{}
+		hooks = &ClusterNodeHooks[T, PT]{}
 	}
 	return (&NodeReconciler[T, PT]{
 		Client: mgr.GetClient(),
@@ -195,6 +190,17 @@ func (r *NodeReconciler[T, PT]) Reconcile(ctx context.Context, req ctrl.Request)
 		status.MatchesCluster = false
 	}
 
+	markPodIfReady := func(pod *corev1.Pod) {
+		status.Healthy = isHealthy(pod)
+		status.Running = isRunningAndReady(pod)
+
+		if isHealthy(pod) {
+			// we have a one way operation of setting this as fully ready for the current cluster
+			status.MatchesCluster = true
+			setPhase(node, status, readyPhase("cluster node ready"))
+		}
+	}
+
 	syncStatus := func(err error) (ctrl.Result, error) {
 		updated := isNodeStatusDirty(&originalStatus, status)
 		for _, condition := range []metav1.Condition{
@@ -224,10 +230,15 @@ func (r *NodeReconciler[T, PT]) Reconcile(ctx context.Context, req ctrl.Request)
 	}
 
 	if len(pods) == 0 {
-		if err := r.createPod(ctx, status, node, pvcs); err != nil {
+		pod, err := r.createPod(ctx, status, node, pvcs)
+		if err != nil {
 			logger.Error(err, "creating pod")
 			return syncStatus(err)
 		}
+
+		// if the pod becomes immediately ready, mark this as such
+		markPodIfReady(pod)
+
 		// we created a pod, that's all we're going to do for now
 		return syncStatus(nil)
 	}
@@ -243,6 +254,7 @@ func (r *NodeReconciler[T, PT]) Reconcile(ctx context.Context, req ctrl.Request)
 
 	// we now know we have a single pod, do the management work for it
 	pod := pods[0]
+
 	podVersion := getHash(pod)
 	if podVersion == "" || podVersion != status.CurrentVersion {
 		if err := r.decommissionPod(ctx, status, node, pod); err != nil {
@@ -282,14 +294,12 @@ func (r *NodeReconciler[T, PT]) Reconcile(ctx context.Context, req ctrl.Request)
 			logger.Error(err, "decommissioning unused pvs")
 			return syncStatus(err)
 		}
+		// wait until all PVs are deleted then see if we're all up-to-date
+		return syncStatus(nil)
 	}
 
 	// if everything worked out and we have a ready pod, then mark the node as such
-	if isPodReady(pod) {
-		// we have a one way operation of setting this as fully ready for the current cluster
-		status.MatchesCluster = true
-		setPhase(node, status, readyPhase("cluster node ready"))
-	}
+	markPodIfReady(pod)
 
 	return syncStatus(nil)
 }
@@ -360,24 +370,24 @@ func (r *NodeReconciler[T, PT]) ensurePersistentVolumes(ctx context.Context, sta
 	return true, nil, nil
 }
 
-func (r *NodeReconciler[T, PT]) createPod(ctx context.Context, status *clusterv1alpha1.ClusterNodeStatus, node PT, pvcs []*corev1.PersistentVolumeClaim) error {
+func (r *NodeReconciler[T, PT]) createPod(ctx context.Context, status *clusterv1alpha1.ClusterNodeStatus, node PT, pvcs []*corev1.PersistentVolumeClaim) (*corev1.Pod, error) {
 	// we set the phase here in case of an early return due to an error
 	setPhase(node, status, initializingPhase("generating pod"))
 
 	pod, err := getPodFromTemplate(node.GetPodSpec(), node, metav1.NewControllerRef(node, node.GetObjectKind().GroupVersionKind()))
 	if err != nil {
-		return fmt.Errorf("initializing pod from template: %w", err)
+		return nil, fmt.Errorf("initializing pod from template: %w", err)
 	}
 
 	volumes := []string{}
 	needed, _, found, err := r.neededPersistentVolumeClaims(node, pvcs)
 	if err != nil {
-		return fmt.Errorf("getting list of pvcs: %w", err)
+		return nil, fmt.Errorf("getting list of pvcs: %w", err)
 	}
 
 	version, err := initPod(node, pod, needed)
 	if err != nil {
-		return fmt.Errorf("initializing pod template: %w", err)
+		return nil, fmt.Errorf("initializing pod template: %w", err)
 	}
 
 	for _, claim := range found {
@@ -403,27 +413,27 @@ func (r *NodeReconciler[T, PT]) createPod(ctx context.Context, status *clusterv1
 	}
 
 	if err := runNodeLifecycleBeforeHook(ctx, node, modifying, r.hooks.Create); err != nil {
-		return fmt.Errorf("running pod and pvcs before create hook: %w", err)
+		return nil, fmt.Errorf("running pod and pvcs before create hook: %w", err)
 	}
 
 	for _, claim := range claims {
 		if err := r.Client.Patch(ctx, claim, client.Apply, fieldOwner, client.ForceOwnership); err != nil {
-			return fmt.Errorf("applying persistent volume claim: %w", err)
+			return nil, fmt.Errorf("applying persistent volume claim: %w", err)
 		}
 	}
 
 	if err := r.Client.Patch(ctx, pod, client.Apply, fieldOwner, client.ForceOwnership); err != nil {
-		return fmt.Errorf("applying pod: %w", err)
+		return nil, fmt.Errorf("applying pod: %w", err)
 	}
 
 	status.PreviousVersion = status.CurrentVersion
 	status.CurrentVersion = version
 
 	if err := runNodeLifecycleAfterHook(ctx, node, modifying, r.hooks.Create); err != nil {
-		return fmt.Errorf("running pod and pvcs after create hook: %w", err)
+		return nil, fmt.Errorf("running pod and pvcs after create hook: %w", err)
 	}
 
-	return nil
+	return pod, nil
 }
 
 func (r *NodeReconciler[T, PT]) decommissionPVCs(ctx context.Context, status *clusterv1alpha1.ClusterNodeStatus, node PT, pvcs []*corev1.PersistentVolumeClaim) error {
@@ -594,11 +604,10 @@ func sortCreation[T client.Object](objects []T) []T {
 	sort.SliceStable(objects, func(i, j int) bool {
 		a, b := objects[i], objects[j]
 		aTimestamp, bTimestamp := ptr.To(a.GetCreationTimestamp()), ptr.To(b.GetCreationTimestamp())
-		if aTimestamp.Before(bTimestamp) {
-			return true
+		if aTimestamp.Equal(bTimestamp) {
+			return a.GetName() < b.GetName()
 		}
-
-		return a.GetName() < b.GetName()
+		return aTimestamp.Before(bTimestamp)
 	})
 	return objects
 }

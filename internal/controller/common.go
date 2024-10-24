@@ -10,9 +10,10 @@ import (
 )
 
 const (
-	ownerIndex   = ".metadata.controller"
-	nodeIndex    = ".spec.nodeName"
-	clusterLabel = "cluster"
+	ownerIndex                     = ".metadata.controller"
+	fieldOwner   client.FieldOwner = "cluster-node-controller"
+	hashLabel    string            = "cluster-node-hash"
+	clusterLabel string            = "cluster-name"
 )
 
 type ClusterObject[U any, PU ptrToClusterNode[U]] interface {
