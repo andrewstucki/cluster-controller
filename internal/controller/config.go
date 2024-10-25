@@ -34,6 +34,7 @@ const (
 	defaultFieldOwner   = "cluster-controller"
 	defaultHashLabel    = "cluster-hash"
 	defaultClusterLabel = "cluster-name"
+	defaultFinalizer    = "cluster-finalizer"
 )
 
 type Config[T, U any, PT ptrToObject[T], PU ptrToObject[U]] struct {
@@ -43,6 +44,7 @@ type Config[T, U any, PT ptrToObject[T], PU ptrToObject[U]] struct {
 	FieldOwner   client.FieldOwner
 	HashLabel    string
 	ClusterLabel string
+	Finalizer    string
 }
 
 type ConfigBuilder[T, U any, PT ptrToObject[T], PU ptrToObject[U]] struct {
@@ -51,6 +53,7 @@ type ConfigBuilder[T, U any, PT ptrToObject[T], PU ptrToObject[U]] struct {
 	fieldOwner     client.FieldOwner
 	hashLabel      string
 	clusterLabel   string
+	finalizer      string
 }
 
 func New[T, U any, PT ptrToObject[T], PU ptrToObject[U]](runtimeManager ctrl.Manager, manager ClusterManager[T, U, PT, PU]) *ConfigBuilder[T, U, PT, PU] {
@@ -60,11 +63,17 @@ func New[T, U any, PT ptrToObject[T], PU ptrToObject[U]](runtimeManager ctrl.Man
 		fieldOwner:     defaultFieldOwner,
 		hashLabel:      defaultHashLabel,
 		clusterLabel:   defaultClusterLabel,
+		finalizer:      defaultFinalizer,
 	}
 }
 
 func (c *ConfigBuilder[T, U, PT, PU]) WithFieldOwner(owner client.FieldOwner) *ConfigBuilder[T, U, PT, PU] {
 	c.fieldOwner = owner
+	return c
+}
+
+func (c *ConfigBuilder[T, U, PT, PU]) WithFinalizer(finalizer string) *ConfigBuilder[T, U, PT, PU] {
+	c.finalizer = finalizer
 	return c
 }
 
@@ -86,6 +95,7 @@ func (c *ConfigBuilder[T, U, PT, PU]) Setup(ctx context.Context) error {
 		HashLabel:    c.hashLabel,
 		ClusterLabel: c.clusterLabel,
 		FieldOwner:   c.fieldOwner,
+		Finalizer:    c.finalizer,
 	}
 
 	if err := SetupClusterReconciler(ctx, c.runtimeManager, config); err != nil {

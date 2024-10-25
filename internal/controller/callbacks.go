@@ -69,6 +69,27 @@ var (
 	errUnknownCallback = errors.New("callback not supported")
 )
 
+type ClusterSubscriber[T, U any, PT ptrToObject[T], PU ptrToObject[U]] interface {
+	BeforeClusterDelete(ctx context.Context, objects *ClusterObjects[T, U, PT, PU]) error
+	AfterClusterDelete(ctx context.Context, objects *ClusterObjects[T, U, PT, PU]) error
+}
+
+func runSubscriberCallback[T, U any, PT ptrToObject[T], PU ptrToObject[U]](ctx context.Context, manager ClusterManager[T, U, PT, PU], objects *ClusterObjects[T, U, PT, PU], name callback) error {
+	subscriber, ok := manager.(ClusterSubscriber[T, U, PT, PU])
+	if !ok {
+		return nil
+	}
+
+	switch name {
+	case beforeDeleteCallback:
+		return subscriber.BeforeClusterDelete(ctx, objects)
+	case afterDeleteCallback:
+		return subscriber.AfterClusterDelete(ctx, objects)
+	}
+
+	return errUnknownCallback
+}
+
 type ClusterNodeSubscriber[T, U any, PT ptrToObject[T], PU ptrToObject[U]] interface {
 	BeforeClusterNodeCreate(ctx context.Context, objects *ClusterObjects[T, U, PT, PU]) error
 	AfterClusterNodeCreate(ctx context.Context, objects *ClusterObjects[T, U, PT, PU]) error
@@ -194,6 +215,16 @@ type debuggingCallbacks[T, U any, PT ptrToObject[T], PU ptrToObject[U]] struct {
 	logger logr.Logger
 }
 
+func (c *debuggingCallbacks[T, U, PT, PU]) BeforeClusterDelete(ctx context.Context, objects *ClusterObjects[T, U, PT, PU]) error {
+	c.logger.Info("before cluster deletion", "objects", objects.String())
+	return runSubscriberCallback(ctx, c.ClusterManager, objects, beforeDeleteCallback)
+}
+
+func (c *debuggingCallbacks[T, U, PT, PU]) AfterClusterDelete(ctx context.Context, objects *ClusterObjects[T, U, PT, PU]) error {
+	c.logger.Info("after cluster deletion", "objects", objects.String())
+	return runSubscriberCallback(ctx, c.ClusterManager, objects, afterDeleteCallback)
+}
+
 func (c *debuggingCallbacks[T, U, PT, PU]) BeforeClusterNodeCreate(ctx context.Context, objects *ClusterObjects[T, U, PT, PU]) error {
 	c.logger.Info("before cluster node creation", "objects", objects.String())
 	return runNodeSubscriberCallback(ctx, c.ClusterManager, objects, beforeCreateCallback)
@@ -300,6 +331,14 @@ func DebugClusterManager[T, U any, PT ptrToObject[T], PU ptrToObject[U]](logger 
 
 // UnimplementedCallbacks is embeddable so that you only have to implement some of the given callbacks
 type UnimplementedCallbacks[T, U any, PT ptrToObject[T], PU ptrToObject[U]] struct{}
+
+func (c *UnimplementedCallbacks[T, U, PT, PU]) BeforeClusterDelete(ctx context.Context, objects *ClusterObjects[T, U, PT, PU]) error {
+	return nil
+}
+
+func (c *UnimplementedCallbacks[T, U, PT, PU]) AfterClusterDelete(ctx context.Context, objects *ClusterObjects[T, U, PT, PU]) error {
+	return nil
+}
 
 func (c *UnimplementedCallbacks[T, U, PT, PU]) BeforeClusterNodeCreate(ctx context.Context, objects *ClusterObjects[T, U, PT, PU]) error {
 	return nil

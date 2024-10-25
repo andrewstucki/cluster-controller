@@ -18,6 +18,7 @@ import (
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
@@ -61,7 +62,7 @@ func (r *ClusterNodeReconciler[T, U, PT, PU]) setupWithManager(ctx context.Conte
 	}
 
 	return ctrl.NewControllerManagedBy(mgr).
-		For(newKubeObject[T, PT]()).
+		For(newKubeObject[U, PU]()).
 		Owns(&corev1.Pod{}).
 		Owns(&corev1.PersistentVolume{}).
 		Owns(&corev1.PersistentVolumeClaim{}).
@@ -74,6 +75,17 @@ func (r *ClusterNodeReconciler[T, U, PT, PU]) Reconcile(ctx context.Context, req
 	node := newKubeObject[U, PU]()
 	if err := r.config.Client.Get(ctx, req.NamespacedName, node); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
+
+	cluster, err := r.getCluster(ctx, node)
+	if err != nil {
+		logger.Error(err, "fetching cluster")
+		return ctrl.Result{}, err
+	}
+	if cluster == nil {
+		// we have no cluster that this node is associated with, which isn't supported
+		// so just ignore this node
+		return ctrl.Result{}, nil
 	}
 
 	pods, err := r.getClusterPods(ctx, node.GetName())
@@ -135,7 +147,68 @@ func (r *ClusterNodeReconciler[T, U, PT, PU]) Reconcile(ctx context.Context, req
 		return ctrl.Result{}, err
 	}
 
-	pvsStable, unusedPVs, err := r.ensurePersistentVolumes(ctx, status, node, pvs)
+	// we are being deleted, clean up everything
+	if node.GetDeletionTimestamp() != nil {
+		modifying := &ClusterObjects[T, U, PT, PU]{Cluster: cluster, Node: node}
+
+		if !isTerminatingPhase(status) {
+			if err := runNodeSubscriberCallback(ctx, r.config.Manager, modifying, beforeDeleteCallback); err != nil {
+				logger.Error(err, "before node termination")
+				return syncStatus(err)
+			}
+			setPhase(node, status, terminatingPhase("node terminating"))
+		}
+
+		if len(pods) > 0 {
+			if err := r.decommissionPod(ctx, status, cluster, node, pods[0]); err != nil {
+				logger.Error(err, "decommissioning pod")
+				return syncStatus(err)
+			}
+			// we scale down each pod one at a time
+			return syncStatus(nil)
+		}
+
+		if len(pvcs) > 0 {
+			if err := r.decommissionPVCs(ctx, status, cluster, node, pvcs); err != nil {
+				logger.Error(err, "decommissioning pvcs")
+				return syncStatus(err)
+			}
+			// we delete all the pvcs first before moving on to the pvs last
+			return syncStatus(nil)
+		}
+
+		if len(pvs) > 0 {
+			if err := r.decommissionPVs(ctx, status, cluster, node, pvs); err != nil {
+				logger.Error(err, "decommissioning pvs")
+				return syncStatus(err)
+			}
+			// we make sure all pvs are cleaned up before removing the finalizer
+			return syncStatus(nil)
+		}
+
+		if controllerutil.RemoveFinalizer(node, r.config.Finalizer) {
+			if err := r.config.Client.Update(ctx, node); err != nil {
+				logger.Error(err, "updating node finalizer")
+				return ctrl.Result{}, err
+			}
+
+			if err := runNodeSubscriberCallback(ctx, r.config.Manager, modifying, beforeDeleteCallback); err != nil {
+				logger.Error(err, "after node termination (non-retryable)")
+			}
+		}
+		return ctrl.Result{}, nil
+	}
+
+	// add a finalizer
+	if controllerutil.AddFinalizer(node, r.config.Finalizer) {
+		if err := r.config.Client.Update(ctx, node); err != nil {
+			logger.Error(err, "updating node finalizer")
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{}, nil
+	}
+
+	pvsStable, unusedPVs, err := r.ensurePersistentVolumes(ctx, status, cluster, node, pvs)
 	if err != nil {
 		logger.Error(err, "ensuring pvs")
 		return syncStatus(err)
@@ -146,7 +219,7 @@ func (r *ClusterNodeReconciler[T, U, PT, PU]) Reconcile(ctx context.Context, req
 	}
 
 	if len(pods) == 0 {
-		pod, err := r.createPod(ctx, status, node, pvcs)
+		pod, err := r.createPod(ctx, status, cluster, node, pvcs)
 		if err != nil {
 			logger.Error(err, "creating pod")
 			return syncStatus(err)
@@ -160,7 +233,7 @@ func (r *ClusterNodeReconciler[T, U, PT, PU]) Reconcile(ctx context.Context, req
 	}
 
 	if len(pods) > 1 {
-		if err := r.decommissionPod(ctx, status, node, pods[0]); err != nil {
+		if err := r.decommissionPod(ctx, status, cluster, node, pods[0]); err != nil {
 			logger.Error(err, "decommissioning pod")
 			return syncStatus(err)
 		}
@@ -173,7 +246,7 @@ func (r *ClusterNodeReconciler[T, U, PT, PU]) Reconcile(ctx context.Context, req
 
 	podVersion := getHash(r.config.HashLabel, pod)
 	if podVersion == "" || podVersion != status.CurrentVersion {
-		if err := r.decommissionPod(ctx, status, node, pod); err != nil {
+		if err := r.decommissionPod(ctx, status, cluster, node, pod); err != nil {
 			logger.Error(err, "decommissioning pod with non-current version", "version", podVersion)
 			return syncStatus(err)
 		}
@@ -182,7 +255,7 @@ func (r *ClusterNodeReconciler[T, U, PT, PU]) Reconcile(ctx context.Context, req
 
 	// if we detect a pod as finished, attempt to restart it
 	if isFailed(pod) || isSucceeded(pod) {
-		if err := r.restartPod(ctx, status, node, pod); err != nil {
+		if err := r.restartPod(ctx, status, cluster, node, pod); err != nil {
 			logger.Error(err, "restarting stopped pod")
 			return syncStatus(err)
 		}
@@ -196,7 +269,7 @@ func (r *ClusterNodeReconciler[T, U, PT, PU]) Reconcile(ctx context.Context, req
 		return syncStatus(err)
 	}
 	if len(unusedPVCs) > 0 {
-		if err := r.decommissionPVCs(ctx, status, node, unusedPVCs); err != nil {
+		if err := r.decommissionPVCs(ctx, status, cluster, node, unusedPVCs); err != nil {
 			logger.Error(err, "decommissioning unused pvcs")
 			return syncStatus(err)
 		}
@@ -206,7 +279,7 @@ func (r *ClusterNodeReconciler[T, U, PT, PU]) Reconcile(ctx context.Context, req
 
 	// finally delete any unused pvs
 	if len(unusedPVs) > 0 {
-		if err := r.decommissionPVs(ctx, status, node, unusedPVs); err != nil {
+		if err := r.decommissionPVs(ctx, status, cluster, node, unusedPVs); err != nil {
 			logger.Error(err, "decommissioning unused pvs")
 			return syncStatus(err)
 		}
@@ -220,7 +293,7 @@ func (r *ClusterNodeReconciler[T, U, PT, PU]) Reconcile(ctx context.Context, req
 	return syncStatus(nil)
 }
 
-func (r *ClusterNodeReconciler[T, U, PT, PU]) ensurePersistentVolumes(ctx context.Context, status *clusterv1alpha1.ClusterNodeStatus, node PU, pvs []*corev1.PersistentVolume) (bool, []*corev1.PersistentVolume, error) {
+func (r *ClusterNodeReconciler[T, U, PT, PU]) ensurePersistentVolumes(ctx context.Context, status *clusterv1alpha1.ClusterNodeStatus, cluster PT, node PU, pvs []*corev1.PersistentVolume) (bool, []*corev1.PersistentVolume, error) {
 	needed, unused, _, err := r.neededPersistentVolumes(node, pvs)
 	if err != nil {
 		return false, nil, fmt.Errorf("getting needed persistent volumes: %w", err)
@@ -252,7 +325,7 @@ func (r *ClusterNodeReconciler[T, U, PT, PU]) ensurePersistentVolumes(ctx contex
 	}
 	sortCreation(volumes)
 
-	modifying := &ClusterObjects[T, U, PT, PU]{Node: node, PersistentVolumes: pvs}
+	modifying := &ClusterObjects[T, U, PT, PU]{Cluster: cluster, Node: node, PersistentVolumes: pvs}
 	if err := runNodePersistentVolumeSubscriberCallback(ctx, r.config.Manager, modifying, beforeCreateCallback); err != nil {
 		return false, nil, fmt.Errorf("running pvs before create hook: %w", err)
 	}
@@ -283,7 +356,7 @@ func (r *ClusterNodeReconciler[T, U, PT, PU]) ensurePersistentVolumes(ctx contex
 	return true, nil, nil
 }
 
-func (r *ClusterNodeReconciler[T, U, PT, PU]) createPod(ctx context.Context, status *clusterv1alpha1.ClusterNodeStatus, node PU, pvcs []*corev1.PersistentVolumeClaim) (*corev1.Pod, error) {
+func (r *ClusterNodeReconciler[T, U, PT, PU]) createPod(ctx context.Context, status *clusterv1alpha1.ClusterNodeStatus, cluster PT, node PU, pvcs []*corev1.PersistentVolumeClaim) (*corev1.Pod, error) {
 	// we set the phase here in case of an early return due to an error
 	setPhase(node, status, initializingPhase("generating pod"))
 
@@ -320,7 +393,7 @@ func (r *ClusterNodeReconciler[T, U, PT, PU]) createPod(ctx context.Context, sta
 	}
 	claims = sortCreation(claims)
 
-	modifying := &ClusterObjects[T, U, PT, PU]{Node: node, Pod: pod, PersistentVolumeClaims: pvcs}
+	modifying := &ClusterObjects[T, U, PT, PU]{Cluster: cluster, Node: node, Pod: pod, PersistentVolumeClaims: pvcs}
 
 	if err := runNodePersistentVolumeClaimSubscriberCallback(ctx, r.config.Manager, modifying, beforeCreateCallback); err != nil {
 		return nil, fmt.Errorf("running pvcs before create hook: %w", err)
@@ -354,7 +427,12 @@ func (r *ClusterNodeReconciler[T, U, PT, PU]) createPod(ctx context.Context, sta
 	return pod, nil
 }
 
-func (r *ClusterNodeReconciler[T, U, PT, PU]) decommissionPVCs(ctx context.Context, status *clusterv1alpha1.ClusterNodeStatus, node PU, pvcs []*corev1.PersistentVolumeClaim) error {
+func (r *ClusterNodeReconciler[T, U, PT, PU]) decommissionPVCs(ctx context.Context, status *clusterv1alpha1.ClusterNodeStatus, cluster PT, node PU, pvcs []*corev1.PersistentVolumeClaim) error {
+	pvcs = filterNotDeleted(pvcs)
+	if len(pvcs) == 0 {
+		return nil
+	}
+
 	claims := []string{}
 	for _, claim := range pvcs {
 		claims = append(claims, fmt.Sprintf("\"%s/%s\"", claim.Namespace, claim.Name))
@@ -362,7 +440,7 @@ func (r *ClusterNodeReconciler[T, U, PT, PU]) decommissionPVCs(ctx context.Conte
 
 	setPhase(node, status, decommissioningPhase(fmt.Sprintf("decommissioning persistent volume claims: (%s)", strings.Join(claims, ", "))))
 
-	modifying := &ClusterObjects[T, U, PT, PU]{Node: node, PersistentVolumeClaims: pvcs}
+	modifying := &ClusterObjects[T, U, PT, PU]{Cluster: cluster, Node: node, PersistentVolumeClaims: pvcs}
 
 	if err := runNodePersistentVolumeClaimSubscriberCallback(ctx, r.config.Manager, modifying, beforeDeleteCallback); err != nil {
 		return fmt.Errorf("running pvcs before delete hook: %w", err)
@@ -388,7 +466,12 @@ func (r *ClusterNodeReconciler[T, U, PT, PU]) decommissionPVCs(ctx context.Conte
 	return nil
 }
 
-func (r *ClusterNodeReconciler[T, U, PT, PU]) decommissionPVs(ctx context.Context, status *clusterv1alpha1.ClusterNodeStatus, node PU, pvs []*corev1.PersistentVolume) error {
+func (r *ClusterNodeReconciler[T, U, PT, PU]) decommissionPVs(ctx context.Context, status *clusterv1alpha1.ClusterNodeStatus, cluster PT, node PU, pvs []*corev1.PersistentVolume) error {
+	pvs = filterNotDeleted(pvs)
+	if len(pvs) == 0 {
+		return nil
+	}
+
 	volumes := []string{}
 	for _, volume := range pvs {
 		volumes = append(volumes, fmt.Sprintf("\"%s/%s\"", volume.Namespace, volume.Name))
@@ -396,7 +479,7 @@ func (r *ClusterNodeReconciler[T, U, PT, PU]) decommissionPVs(ctx context.Contex
 
 	setPhase(node, status, decommissioningPhase(fmt.Sprintf("decommissioning persistent volumes: (%s)", strings.Join(volumes, ", "))))
 
-	modifying := &ClusterObjects[T, U, PT, PU]{Node: node, PersistentVolumes: pvs}
+	modifying := &ClusterObjects[T, U, PT, PU]{Cluster: cluster, Node: node, PersistentVolumes: pvs}
 
 	if err := runNodePersistentVolumeSubscriberCallback(ctx, r.config.Manager, modifying, beforeDeleteCallback); err != nil {
 		return fmt.Errorf("running pvs before delete hook: %w", err)
@@ -422,10 +505,14 @@ func (r *ClusterNodeReconciler[T, U, PT, PU]) decommissionPVs(ctx context.Contex
 	return nil
 }
 
-func (r *ClusterNodeReconciler[T, U, PT, PU]) decommissionPod(ctx context.Context, status *clusterv1alpha1.ClusterNodeStatus, node PU, pod *corev1.Pod) error {
+func (r *ClusterNodeReconciler[T, U, PT, PU]) decommissionPod(ctx context.Context, status *clusterv1alpha1.ClusterNodeStatus, cluster PT, node PU, pod *corev1.Pod) error {
+	if pod.DeletionTimestamp != nil {
+		return nil
+	}
+
 	setPhase(node, status, decommissioningPhase(fmt.Sprintf("decommissioning pod: %s/%s", pod.Namespace, pod.Name)))
 
-	modifying := &ClusterObjects[T, U, PT, PU]{Node: node, Pod: pod}
+	modifying := &ClusterObjects[T, U, PT, PU]{Cluster: cluster, Node: node, Pod: pod}
 	if err := runNodePodSubscriberCallback(ctx, r.config.Manager, modifying, beforeDeleteCallback); err != nil {
 		return fmt.Errorf("running pod before delete hook: %w", err)
 	}
@@ -443,10 +530,10 @@ func (r *ClusterNodeReconciler[T, U, PT, PU]) decommissionPod(ctx context.Contex
 	return nil
 }
 
-func (r *ClusterNodeReconciler[T, U, PT, PU]) restartPod(ctx context.Context, status *clusterv1alpha1.ClusterNodeStatus, node PU, pod *corev1.Pod) error {
+func (r *ClusterNodeReconciler[T, U, PT, PU]) restartPod(ctx context.Context, status *clusterv1alpha1.ClusterNodeStatus, cluster PT, node PU, pod *corev1.Pod) error {
 	setPhase(node, status, restartingPhase(fmt.Sprintf("restarting pod: %s/%s", pod.Namespace, pod.Name)))
 
-	modifying := &ClusterObjects[T, U, PT, PU]{Node: node, Pod: pod}
+	modifying := &ClusterObjects[T, U, PT, PU]{Cluster: cluster, Node: node, Pod: pod}
 	if err := runNodePodSubscriberCallback(ctx, r.config.Manager, modifying, beforeDeleteCallback); err != nil {
 		return fmt.Errorf("running pod before delete hook on restart: %w", err)
 	}
@@ -462,6 +549,26 @@ func (r *ClusterNodeReconciler[T, U, PT, PU]) restartPod(ctx context.Context, st
 	}
 
 	return nil
+}
+
+func (r *ClusterNodeReconciler[T, U, PT, PU]) getCluster(ctx context.Context, node PU) (PT, error) {
+	cluster := newKubeObject[T, PT]()
+
+	labels := node.GetLabels()
+	if labels == nil {
+		return nil, nil
+	}
+
+	clusterName, ok := labels[r.config.ClusterLabel]
+	if !ok {
+		return nil, nil
+	}
+
+	if err := r.config.Client.Get(ctx, types.NamespacedName{Namespace: node.GetNamespace(), Name: clusterName}, cluster); err != nil {
+		return nil, client.IgnoreNotFound(err)
+	}
+
+	return cluster, nil
 }
 
 func (r *ClusterNodeReconciler[T, U, PT, PU]) getClusterPods(ctx context.Context, nodeName string) ([]*corev1.Pod, error) {
@@ -667,6 +774,11 @@ type phasedStatus interface {
 }
 
 func setPhase(o client.Object, status phasedStatus, phase clusterv1alpha1.Phase) {
+	if isTerminatingPhase(status) {
+		// Terminating is a final phase, so nothing can override it
+		return
+	}
+
 	if status.GetPhase().Name == phase.Name && status.GetPhase().Message == phase.Message && status.GetPhase().ObservedGeneration == o.GetGeneration() {
 		return
 	}
@@ -709,6 +821,17 @@ func gatedPhase(message string) clusterv1alpha1.Phase {
 	}
 }
 
+func terminatingPhase(message string) clusterv1alpha1.Phase {
+	return clusterv1alpha1.Phase{
+		Name:    "Terminating",
+		Message: message,
+	}
+}
+
+func isTerminatingPhase(status phasedStatus) bool {
+	return status.GetPhase().Name == "Terminating"
+}
+
 func restartingPhase(message string) clusterv1alpha1.Phase {
 	return clusterv1alpha1.Phase{
 		Name:    "Restarting",
@@ -739,4 +862,14 @@ func initializingPhase(message string) clusterv1alpha1.Phase {
 
 func isNodeStatusDirty(a, b *clusterv1alpha1.ClusterNodeStatus) bool {
 	return a.ObservedGeneration != b.ObservedGeneration || a.MatchesCluster != b.MatchesCluster || a.ClusterVersion != b.ClusterVersion || a.Phase != b.Phase || a.CurrentVersion != b.CurrentVersion || a.PreviousVersion != b.PreviousVersion
+}
+
+func filterNotDeleted[T client.Object](objects []T) []T {
+	alive := []T{}
+	for _, o := range objects {
+		if o.GetDeletionTimestamp() == nil {
+			alive = append(alive, o)
+		}
+	}
+	return alive
 }

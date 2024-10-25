@@ -15,6 +15,7 @@ import (
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
@@ -92,6 +93,52 @@ func (r *ClusterReconciler[T, U, PT, PU]) Reconcile(ctx context.Context, req ctr
 			return ctrl.Result{}, errors.Join(syncErr, err)
 		}
 
+		return ctrl.Result{}, err
+	}
+
+	// we are being deleted, clean up everything
+	if cluster.GetDeletionTimestamp() != nil {
+		modifying := &ClusterObjects[T, U, PT, PU]{Cluster: cluster}
+
+		if !isTerminatingPhase(status) {
+			if err := runSubscriberCallback(ctx, r.config.Manager, modifying, beforeDeleteCallback); err != nil {
+				logger.Error(err, "before cluster termination")
+				return syncStatus(err)
+			}
+			setPhase(cluster, status, terminatingPhase("cluster terminating"))
+		}
+
+		if len(nodes) > 0 {
+			node := nodes[0]
+
+			if err := r.decommissionNode(ctx, status, cluster, node); err != nil {
+				logger.Error(err, "decommissioning node")
+				return syncStatus(err)
+			}
+
+			// we scale down each node one at a time
+			return syncStatus(nil)
+		}
+
+		if controllerutil.RemoveFinalizer(cluster, r.config.Finalizer) {
+			if err := r.config.Client.Update(ctx, cluster); err != nil {
+				logger.Error(err, "updating cluster finalizer")
+				return ctrl.Result{}, err
+			}
+
+			if err := runSubscriberCallback(ctx, r.config.Manager, modifying, beforeDeleteCallback); err != nil {
+				logger.Error(err, "after cluster termination (non-retryable)")
+			}
+		}
+		return ctrl.Result{}, nil
+	}
+
+	// add a finalizer
+	if controllerutil.AddFinalizer(cluster, r.config.Finalizer) {
+		if err := r.config.Client.Update(ctx, cluster); err != nil {
+			logger.Error(err, "updating cluster finalizer")
+			return ctrl.Result{}, err
+		}
 		return ctrl.Result{}, err
 	}
 
@@ -194,6 +241,11 @@ func (r *ClusterReconciler[T, U, PT, PU]) Reconcile(ctx context.Context, req ctr
 }
 
 func (r *ClusterReconciler[T, U, PT, PU]) decommissionNode(ctx context.Context, status *clusterv1alpha1.ClusterStatus, cluster PT, node PU) error {
+	// don't attempt to delete anything if it's being deleted already
+	if node.GetDeletionTimestamp() != nil {
+		return nil
+	}
+
 	setPhase(cluster, status, decommissioningPhase(fmt.Sprintf("decommissioning node: \"%s/%s\"", node.GetNamespace(), node.GetName())))
 
 	modifying := &ClusterObjects[T, U, PT, PU]{Cluster: cluster, Node: node}
@@ -216,7 +268,7 @@ func (r *ClusterReconciler[T, U, PT, PU]) decommissionNode(ctx context.Context, 
 
 func (r *ClusterReconciler[T, U, PT, PU]) createNode(ctx context.Context, status *clusterv1alpha1.ClusterStatus, cluster PT, hash string) error {
 	node := r.config.Manager.GetClusterNodeTemplate(cluster)
-	initNode(r.config.ClusterLabel, r.config.HashLabel, cluster, node, hash)
+	r.initNode(r.config.ClusterLabel, r.config.HashLabel, cluster, node, hash)
 
 	setPhase(cluster, status, initializingPhase(fmt.Sprintf("creating node \"%s/%s\"", node.GetNamespace(), node.GetName())))
 
@@ -238,7 +290,7 @@ func (r *ClusterReconciler[T, U, PT, PU]) createNode(ctx context.Context, status
 
 func (r *ClusterReconciler[T, U, PT, PU]) updateNode(ctx context.Context, status *clusterv1alpha1.ClusterStatus, cluster PT, node PU, hash string) error {
 	updated := r.config.Manager.GetClusterNodeTemplate(cluster)
-	initNode(r.config.ClusterLabel, r.config.HashLabel, cluster, updated, hash)
+	r.initNode(r.config.ClusterLabel, r.config.HashLabel, cluster, updated, hash)
 	updated.SetName(node.GetName())
 
 	r.config.Manager.MergeClusterNodes(node, updated)
@@ -265,9 +317,14 @@ func (r *ClusterReconciler[T, U, PT, PU]) updateNode(ctx context.Context, status
 	return nil
 }
 
-func initNode[T, U any, PT ptrToObject[T], PU ptrToObject[U]](clusterLabel, hashLabel string, cluster PT, node PU, hash string) {
+func (r *ClusterReconciler[T, U, PT, PU]) initNode(clusterLabel, hashLabel string, cluster PT, node PU, hash string) {
 	node.SetName(cluster.GetName() + fmt.Sprintf("-%s", rand.String(8)))
 	node.SetNamespace(cluster.GetNamespace())
+
+	kinds, _, _ := r.config.Scheme.ObjectKinds(node)
+	kind := kinds[0]
+
+	node.GetObjectKind().SetGroupVersionKind(kind)
 
 	node.SetOwnerReferences([]metav1.OwnerReference{*metav1.NewControllerRef(cluster, cluster.GetObjectKind().GroupVersionKind())})
 
