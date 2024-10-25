@@ -141,17 +141,15 @@ func main() {
 		os.Exit(1)
 	}
 
-	clusterHooks := controller.NewDebugClusterHooks[clusterv1alpha1.Cluster, clusterv1alpha1.Broker](mgr.GetLogger())
-	if err = controller.SetupClusterReconciler(ctx, mgr, clusterHooks); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "Cluster")
+	if err := controller.New(mgr, controller.DebugClusterManager(mgr.GetLogger(), &Manager{})).
+		WithFieldOwner("example-owner").
+		WithHashLabel("example-cluster-hash").
+		WithClusterLabel("example-cluster-name").
+		Setup(ctx); err != nil {
+		setupLog.Error(err, "unable to setup controllers")
 		os.Exit(1)
 	}
 
-	nodeHooks := controller.NewDebugNodeHooks[clusterv1alpha1.Broker](mgr.GetLogger())
-	if err = controller.SetupNodeReconciler(ctx, mgr, nodeHooks); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "Broker")
-		os.Exit(1)
-	}
 	// +kubebuilder:scaffold:builder
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {

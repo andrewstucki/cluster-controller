@@ -9,30 +9,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-const (
-	ownerIndex                     = ".metadata.controller"
-	fieldOwner   client.FieldOwner = "cluster-node-controller"
-	hashLabel    string            = "cluster-node-hash"
-	clusterLabel string            = "cluster-name"
-)
-
-type ClusterObject[U any, PU ptrToClusterNode[U]] interface {
-	client.Object
-	GetClusterStatus() clusterv1alpha1.ClusterStatus
-	SetClusterStatus(status clusterv1alpha1.ClusterStatus)
-	GetReplicas() int
-	GetMinimumHealthyReplicas() int
-	GetNodeHash() (string, error)
-	GetClusterNode() PU
-}
+const ownerIndex = ".metadata.controller"
 
 type ptrToObject[T any] interface {
 	client.Object
-	*T
-}
-
-type ptrToCluster[T, U any, PU ptrToClusterNode[U]] interface {
-	ClusterObject[U, PU]
 	*T
 }
 
