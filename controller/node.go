@@ -7,7 +7,7 @@ import (
 	"sort"
 	"strings"
 
-	clusterv1alpha1 "github.com/andrewstucki/cluster-controller/api/v1alpha1"
+	clusterv1alpha1 "github.com/andrewstucki/cluster-controller/controller/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	k8sapierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"

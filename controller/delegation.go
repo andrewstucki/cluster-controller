@@ -1,7 +1,7 @@
 package controller
 
 import (
-	clusterv1alpha1 "github.com/andrewstucki/cluster-controller/api/v1alpha1"
+	clusterv1alpha1 "github.com/andrewstucki/cluster-controller/controller/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )

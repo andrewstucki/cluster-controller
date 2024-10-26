@@ -1,0 +1,7 @@
+---
+apiVersion: cluster.lambda.coffee/v1alpha1
+kind: Cluster
+metadata:
+  name: cluster
+spec:
+  replicas: 3
