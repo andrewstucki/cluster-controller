@@ -8,8 +8,8 @@ import (
 	"slices"
 
 	clusterv1alpha1 "github.com/andrewstucki/cluster-controller/controller/api/v1alpha1"
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	k8sapierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/rand"
 	"k8s.io/utils/ptr"
@@ -30,10 +30,24 @@ func SetupClusterReconciler[T, U any, PT ptrToObject[T], PU ptrToObject[U]](mgr 
 }
 
 func (r *ClusterReconciler[T, U, PT, PU]) setupWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewControllerManagedBy(mgr).
-		For(newKubeObject[T, PT]()).
-		Owns(newKubeObject[U, PU]()).
-		Complete(r)
+	return watchResources(
+		ctrl.NewControllerManagedBy(mgr).For(newKubeObject[T, PT]()),
+		r.config.Manager, ResourceKindCluster, r.config.NamespaceLabel, r.config.ClusterLabel, r.ownerTypeLabels(),
+	).Owns(newKubeObject[U, PU]()).Complete(r)
+}
+
+func (r *ClusterReconciler[T, U, PT, PU]) matchingLabels(cluster PT) map[string]string {
+	return map[string]string{
+		r.config.ClusterLabel:   cluster.GetName(),
+		r.config.NamespaceLabel: cluster.GetNamespace(),
+		r.config.OwnerTypeLabel: "cluster",
+	}
+}
+
+func (r *ClusterReconciler[T, U, PT, PU]) ownerTypeLabels() map[string]string {
+	return map[string]string{
+		r.config.OwnerTypeLabel: "cluster",
+	}
 }
 
 func (r *ClusterReconciler[T, U, PT, PU]) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -66,14 +80,7 @@ func (r *ClusterReconciler[T, U, PT, PU]) Reconcile(ctx context.Context, req ctr
 	status.OutOfDateReplicas = 0
 
 	syncStatus := func(err error) (ctrl.Result, error) {
-		updated := isClusterStatusDirty(&originalStatus, status)
-		for _, condition := range []metav1.Condition{} {
-			if meta.SetStatusCondition(&status.Conditions, condition) {
-				updated = true
-			}
-		}
-
-		if updated {
+		if !apiequality.Semantic.DeepEqual(status, &originalStatus) {
 			r.config.Manager.SetClusterStatus(cluster, *status)
 			syncErr := r.config.Client.Status().Update(ctx, cluster)
 			err = errors.Join(syncErr, err)
@@ -92,6 +99,11 @@ func (r *ClusterReconciler[T, U, PT, PU]) Reconcile(ctx context.Context, req ctr
 				return syncStatus(err)
 			}
 			setPhase(cluster, status, terminatingPhase("cluster terminating"))
+		}
+
+		// clean up all my resources
+		if deleted, err := deleteAllResources(ctx, r.config.Client, r.config.Manager, ResourceKindCluster, r.matchingLabels(cluster)); deleted || err != nil {
+			return syncStatus(err)
 		}
 
 		if len(nodes) > 0 {
@@ -133,6 +145,11 @@ func (r *ClusterReconciler[T, U, PT, PU]) Reconcile(ctx context.Context, req ctr
 	if status.NextNode == "" {
 		generateNextNode(cluster.GetName(), status)
 		return syncStatus(nil)
+	}
+
+	// sync all my resources
+	if err := syncAllResources(ctx, r.config.Client, r.config.Manager, ResourceKindCluster, r.config.FieldOwner, cluster, r.matchingLabels(cluster)); err != nil {
+		return syncStatus(err)
 	}
 
 	// General implementation:
@@ -264,7 +281,7 @@ func (r *ClusterReconciler[T, U, PT, PU]) decommissionNode(ctx context.Context, 
 }
 
 func (r *ClusterReconciler[T, U, PT, PU]) createNode(ctx context.Context, status *clusterv1alpha1.ClusterStatus, cluster PT, hash string) error {
-	node := r.config.Manager.GetClusterNodeTemplate(cluster)
+	node := r.config.Manager.GetClusterNode(cluster)
 	r.initNode(r.config.ClusterLabel, r.config.HashLabel, status, cluster, node, hash)
 
 	setPhase(cluster, status, initializingPhase(fmt.Sprintf("creating node \"%s/%s\"", node.GetNamespace(), node.GetName())))
@@ -291,7 +308,7 @@ func (r *ClusterReconciler[T, U, PT, PU]) createNode(ctx context.Context, status
 }
 
 func (r *ClusterReconciler[T, U, PT, PU]) updateNode(ctx context.Context, status *clusterv1alpha1.ClusterStatus, cluster PT, node PU, hash string) error {
-	updated := r.config.Manager.GetClusterNodeTemplate(cluster)
+	updated := r.config.Manager.GetClusterNode(cluster)
 	r.initNode(r.config.ClusterLabel, r.config.HashLabel, status, cluster, updated, hash)
 	updated.SetName(node.GetName())
 
@@ -385,10 +402,6 @@ func (r *ClusterReconciler[T, U, PT, PU]) getClusterNodes(ctx context.Context, n
 	}
 
 	return sortCreation(converted), nil
-}
-
-func isClusterStatusDirty(a, b *clusterv1alpha1.ClusterStatus) bool {
-	return a.ObservedGeneration != b.ObservedGeneration || a.Replicas != b.Replicas || a.UpToDateReplicas != b.UpToDateReplicas || a.Phase != b.Phase || a.HealthyReplicas != b.HealthyReplicas || a.RunningReplicas != b.RunningReplicas
 }
 
 func isNodeUpdating(status *clusterv1alpha1.ClusterNodeStatus, node client.Object, hashLabel, hash string) bool {

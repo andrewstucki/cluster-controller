@@ -23,6 +23,8 @@ type Manager struct {
 	logger logr.Logger
 }
 
+var _ controller.ResourceManager = (*Manager)(nil)
+
 func (m *Manager) AfterClusterNodeCreate(ctx context.Context, objects *controller.ClusterObjects[Cluster, Broker, *Cluster, *Broker]) error {
 	cluster := client.ObjectKeyFromObject(objects.Cluster).String()
 	node := client.ObjectKeyFromObject(objects.Node).String()
@@ -83,7 +85,7 @@ func (m *Manager) GetClusterMinimumHealthyReplicas(cluster *Cluster) int {
 	return cluster.Spec.MinimumHealthyReplicas
 }
 
-func (m *Manager) GetClusterNodeTemplate(cluster *Cluster) *Broker {
+func (m *Manager) GetClusterNode(cluster *Cluster) *Broker {
 	return &Broker{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "broker",
@@ -94,24 +96,13 @@ func (m *Manager) GetClusterNodeTemplate(cluster *Cluster) *Broker {
 func (m *Manager) HashClusterNode(node *Broker) (string, error) {
 	hf := fnv.New32()
 
-	specData, err := json.Marshal(m.GetClusterNodePodSpec(node))
+	specData, err := json.Marshal(m.GetClusterNodePod(node))
 	if err != nil {
-		return "", fmt.Errorf("marshaling pod spec: %w", err)
+		return "", fmt.Errorf("marshaling pod: %w", err)
 	}
 	_, err = hf.Write(specData)
 	if err != nil {
-		return "", fmt.Errorf("hashing pod spec: %w", err)
-	}
-
-	for _, volume := range m.GetClusterNodeVolumeClaims(node) {
-		volumeData, err := json.Marshal(volume)
-		if err != nil {
-			return "", fmt.Errorf("marshaling volume claim: %w", err)
-		}
-		_, err = hf.Write(volumeData)
-		if err != nil {
-			return "", fmt.Errorf("hashing volume claim: %w", err)
-		}
+		return "", fmt.Errorf("hashing pod: %w", err)
 	}
 
 	return rand.SafeEncodeString(fmt.Sprint(hf.Sum32())), nil
@@ -125,10 +116,11 @@ func (m *Manager) SetClusterNodeStatus(node *Broker, status clusterv1alpha1.Clus
 	node.Status = status
 }
 
-func (m *Manager) GetClusterNodePodSpec(node *Broker) *corev1.PodTemplateSpec {
-	return &corev1.PodTemplateSpec{
+func (m *Manager) GetClusterNodePod(node *Broker) *corev1.Pod {
+	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: "pod",
+			Namespace: node.GetNamespace(),
+			Name:      node.GetName(),
 		},
 		Spec: corev1.PodSpec{
 			Containers: []corev1.Container{{
@@ -140,7 +132,7 @@ func (m *Manager) GetClusterNodePodSpec(node *Broker) *corev1.PodTemplateSpec {
 				Name: "tmp",
 				VolumeSource: corev1.VolumeSource{
 					PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
-						ClaimName: "volume",
+						ClaimName: node.GetName() + "-volume",
 						ReadOnly:  true,
 					},
 				},
@@ -149,45 +141,79 @@ func (m *Manager) GetClusterNodePodSpec(node *Broker) *corev1.PodTemplateSpec {
 	}
 }
 
-func (m *Manager) GetClusterNodeVolumes(node *Broker) []*corev1.PersistentVolume {
-	return []*corev1.PersistentVolume{{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "volume",
-		},
-		Spec: corev1.PersistentVolumeSpec{
-			StorageClassName:              "manual",
-			PersistentVolumeReclaimPolicy: corev1.PersistentVolumeReclaimDelete,
-			Capacity: corev1.ResourceList{
-				corev1.ResourceStorage: resource.MustParse("1Mi"),
-			},
-			AccessModes: []corev1.PersistentVolumeAccessMode{
-				corev1.ReadWriteOnce,
-			},
-			PersistentVolumeSource: corev1.PersistentVolumeSource{
-				HostPath: &corev1.HostPathVolumeSource{
-					Path: "/tmp/foo",
-				},
-			},
-		},
-	}}
+func (m *Manager) ClusterScopedResourceTypes(kind controller.ResourceKind) []client.Object {
+	switch kind {
+	case controller.ResourceKindNode:
+		return []client.Object{
+			&corev1.PersistentVolume{},
+		}
+	}
+	return nil
 }
 
-func (m *Manager) GetClusterNodeVolumeClaims(node *Broker) []*corev1.PersistentVolumeClaim {
-	return []*corev1.PersistentVolumeClaim{{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "volume",
-		},
-		Spec: corev1.PersistentVolumeClaimSpec{
-			VolumeName:       "volume",
-			StorageClassName: ptr.To("manual"),
-			AccessModes: []corev1.PersistentVolumeAccessMode{
-				corev1.ReadWriteOnce,
-			},
-			Resources: corev1.VolumeResourceRequirements{
-				Requests: corev1.ResourceList{
-					corev1.ResourceStorage: resource.MustParse("1Mi"),
+func (m *Manager) ClusterScopedResources(owner client.Object) []client.Object {
+	switch o := owner.(type) {
+	case *Broker:
+		return []client.Object{
+			&corev1.PersistentVolume{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: o.GetNamespace() + "-" + o.GetName() + "-volume",
+				},
+				Spec: corev1.PersistentVolumeSpec{
+					StorageClassName:              "manual",
+					PersistentVolumeReclaimPolicy: corev1.PersistentVolumeReclaimDelete,
+					Capacity: corev1.ResourceList{
+						corev1.ResourceStorage: resource.MustParse("1Mi"),
+					},
+					AccessModes: []corev1.PersistentVolumeAccessMode{
+						corev1.ReadWriteOnce,
+					},
+					PersistentVolumeSource: corev1.PersistentVolumeSource{
+						HostPath: &corev1.HostPathVolumeSource{
+							Path: "/tmp/foo",
+						},
+					},
 				},
 			},
-		},
-	}}
+		}
+	}
+
+	return nil
+}
+
+func (m *Manager) NamespaceScopedResourceTypes(kind controller.ResourceKind) []client.Object {
+	switch kind {
+	case controller.ResourceKindNode:
+		return []client.Object{
+			&corev1.PersistentVolumeClaim{},
+		}
+	}
+	return nil
+}
+
+func (m *Manager) NamespaceScopedResources(owner client.Object) []client.Object {
+	switch o := owner.(type) {
+	case *Broker:
+		return []client.Object{
+			&corev1.PersistentVolumeClaim{
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace: o.GetNamespace(),
+					Name:      o.GetName() + "-volume",
+				},
+				Spec: corev1.PersistentVolumeClaimSpec{
+					VolumeName:       o.GetNamespace() + "-" + o.GetName() + "-volume",
+					StorageClassName: ptr.To("manual"),
+					AccessModes: []corev1.PersistentVolumeAccessMode{
+						corev1.ReadWriteOnce,
+					},
+					Resources: corev1.VolumeResourceRequirements{
+						Requests: corev1.ResourceList{
+							corev1.ResourceStorage: resource.MustParse("1Mi"),
+						},
+					},
+				},
+			},
+		}
+	}
+	return nil
 }

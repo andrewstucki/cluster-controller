@@ -19,21 +19,20 @@ type ClusterManager[T, U any, PT ptrToObject[T], PU ptrToObject[U]] interface {
 	SetClusterStatus(cluster PT, status clusterv1alpha1.ClusterStatus)
 	GetClusterReplicas(cluster PT) int
 	GetClusterMinimumHealthyReplicas(cluster PT) int
-	GetClusterNodeTemplate(cluster PT) PU
+	GetClusterNode(cluster PT) PU
 
 	// Nodes
 	HashClusterNode(node PU) (string, error)
 	GetClusterNodeStatus(node PU) clusterv1alpha1.ClusterNodeStatus
 	SetClusterNodeStatus(node PU, status clusterv1alpha1.ClusterNodeStatus)
-	GetClusterNodePodSpec(node PU) *corev1.PodTemplateSpec
-	GetClusterNodeVolumes(node PU) []*corev1.PersistentVolume
-	GetClusterNodeVolumeClaims(node PU) []*corev1.PersistentVolumeClaim
+	GetClusterNodePod(node PU) *corev1.Pod
 }
 
 const (
 	defaultFieldOwner     = "cluster-controller"
 	defaultHashLabel      = "cluster-hash"
 	defaultClusterLabel   = "cluster-name"
+	defaultOwnerTypeLabel = "cluster-owner-type"
 	defaultNodeLabel      = "cluster-node-name"
 	defaultNamespaceLabel = "cluster-namespace"
 	defaultFinalizer      = "cluster-finalizer"
@@ -46,6 +45,7 @@ type Config[T, U any, PT ptrToObject[T], PU ptrToObject[U]] struct {
 	FieldOwner     client.FieldOwner
 	HashLabel      string
 	NamespaceLabel string
+	OwnerTypeLabel string
 	NodeLabel      string
 	ClusterLabel   string
 	Finalizer      string
@@ -61,6 +61,7 @@ type ConfigBuilder[T, U any, PT ptrToObject[T], PU ptrToObject[U]] struct {
 	clusterLabel   string
 	nodeLabel      string
 	namespaceLabel string
+	ownerTypeLabel string
 	finalizer      string
 	indexPrefix    string
 	testing        bool
@@ -75,6 +76,7 @@ func New[T, U any, PT ptrToObject[T], PU ptrToObject[U]](runtimeManager ctrl.Man
 		clusterLabel:   defaultClusterLabel,
 		nodeLabel:      defaultNodeLabel,
 		namespaceLabel: defaultNamespaceLabel,
+		ownerTypeLabel: defaultOwnerTypeLabel,
 		finalizer:      defaultFinalizer,
 		indexPrefix:    rand.String(4),
 		testing:        false,
@@ -98,6 +100,11 @@ func (c *ConfigBuilder[T, U, PT, PU]) WithHashLabel(label string) *ConfigBuilder
 
 func (c *ConfigBuilder[T, U, PT, PU]) WithClusterLabel(label string) *ConfigBuilder[T, U, PT, PU] {
 	c.clusterLabel = label
+	return c
+}
+
+func (c *ConfigBuilder[T, U, PT, PU]) WithOwnerTypeLabel(label string) *ConfigBuilder[T, U, PT, PU] {
+	c.ownerTypeLabel = label
 	return c
 }
 
@@ -126,6 +133,7 @@ func (c *ConfigBuilder[T, U, PT, PU]) Setup(ctx context.Context) error {
 		ClusterLabel:   c.clusterLabel,
 		NodeLabel:      c.nodeLabel,
 		NamespaceLabel: c.namespaceLabel,
+		OwnerTypeLabel: c.ownerTypeLabel,
 		FieldOwner:     c.fieldOwner,
 		Finalizer:      c.finalizer,
 		IndexPrefix:    c.indexPrefix,
