@@ -17,6 +17,7 @@ limitations under the License.
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"encoding/json"
 	"flag"
@@ -37,6 +38,7 @@ import (
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
@@ -45,6 +47,7 @@ import (
 
 	clusterv1alpha1 "github.com/andrewstucki/cluster-controller/api/v1alpha1"
 	"github.com/andrewstucki/cluster-controller/internal/controller"
+	"github.com/go-logr/logr"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -149,7 +152,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := controller.New(mgr, controller.DebugClusterManager(mgr.GetLogger(), &Manager{})).
+	if err := controller.New(mgr, &Manager{logger: mgr.GetLogger()}).
 		WithFieldOwner("example-owner").
 		WithHashLabel("example-cluster-hash").
 		WithClusterLabel("example-cluster-name").
@@ -178,6 +181,48 @@ func main() {
 
 type Manager struct {
 	controller.UnimplementedCallbacks[clusterv1alpha1.Cluster, clusterv1alpha1.Broker, *clusterv1alpha1.Cluster, *clusterv1alpha1.Broker]
+
+	logger logr.Logger
+}
+
+func (m *Manager) AfterClusterNodeCreate(ctx context.Context, objects *controller.ClusterObjects[clusterv1alpha1.Cluster, clusterv1alpha1.Broker, *clusterv1alpha1.Cluster, *clusterv1alpha1.Broker]) error {
+	cluster := client.ObjectKeyFromObject(objects.Cluster).String()
+	node := client.ObjectKeyFromObject(objects.Node).String()
+
+	m.logger.Info("cluster node created", "cluster", cluster, "node", node)
+	return nil
+}
+
+func (m *Manager) BeforeClusterNodeUpdate(ctx context.Context, objects *controller.ClusterObjects[clusterv1alpha1.Cluster, clusterv1alpha1.Broker, *clusterv1alpha1.Cluster, *clusterv1alpha1.Broker]) error {
+	cluster := client.ObjectKeyFromObject(objects.Cluster).String()
+	node := client.ObjectKeyFromObject(objects.Node).String()
+
+	m.logger.Info("cluster node updating", "cluster", cluster, "node", node)
+	return nil
+}
+
+func (m *Manager) AfterClusterNodeStabilized(ctx context.Context, objects *controller.ClusterObjects[clusterv1alpha1.Cluster, clusterv1alpha1.Broker, *clusterv1alpha1.Cluster, *clusterv1alpha1.Broker]) error {
+	cluster := client.ObjectKeyFromObject(objects.Cluster).String()
+	node := client.ObjectKeyFromObject(objects.Node).String()
+
+	m.logger.Info("cluster node stabilized", "cluster", cluster, "node", node)
+	return nil
+}
+
+func (m *Manager) BeforeClusterNodeDecommission(ctx context.Context, objects *controller.ClusterObjects[clusterv1alpha1.Cluster, clusterv1alpha1.Broker, *clusterv1alpha1.Cluster, *clusterv1alpha1.Broker]) error {
+	cluster := client.ObjectKeyFromObject(objects.Cluster).String()
+	node := client.ObjectKeyFromObject(objects.Node).String()
+
+	m.logger.Info("cluster node decommissioning", "cluster", cluster, "node", node)
+	return nil
+}
+
+func (m *Manager) BeforeClusterNodeDelete(ctx context.Context, objects *controller.ClusterObjects[clusterv1alpha1.Cluster, clusterv1alpha1.Broker, *clusterv1alpha1.Cluster, *clusterv1alpha1.Broker]) error {
+	cluster := client.ObjectKeyFromObject(objects.Cluster).String()
+	node := client.ObjectKeyFromObject(objects.Node).String()
+
+	m.logger.Info("cluster node deleted", "cluster", cluster, "node", node)
+	return nil
 }
 
 func (m *Manager) HashCluster(cluster *clusterv1alpha1.Cluster) (string, error) {

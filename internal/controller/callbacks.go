@@ -63,6 +63,7 @@ const (
 	afterUpdateCallback
 	beforeDecommissionCallback
 	afterDecommissionCallback
+	afterStabilizedCallback
 )
 
 var (
@@ -99,6 +100,8 @@ type ClusterNodeSubscriber[T, U any, PT ptrToObject[T], PU ptrToObject[U]] inter
 	AfterClusterNodeDecommission(ctx context.Context, objects *ClusterObjects[T, U, PT, PU]) error
 	BeforeClusterNodeDelete(ctx context.Context, objects *ClusterObjects[T, U, PT, PU]) error
 	AfterClusterNodeDelete(ctx context.Context, objects *ClusterObjects[T, U, PT, PU]) error
+
+	AfterClusterNodeStabilized(ctx context.Context, objects *ClusterObjects[T, U, PT, PU]) error
 }
 
 func runNodeSubscriberCallback[T, U any, PT ptrToObject[T], PU ptrToObject[U]](ctx context.Context, manager ClusterManager[T, U, PT, PU], objects *ClusterObjects[T, U, PT, PU], name callback) error {
@@ -124,6 +127,8 @@ func runNodeSubscriberCallback[T, U any, PT ptrToObject[T], PU ptrToObject[U]](c
 		return subscriber.BeforeClusterNodeDecommission(ctx, objects)
 	case afterDecommissionCallback:
 		return subscriber.AfterClusterNodeDecommission(ctx, objects)
+	case afterStabilizedCallback:
+		return subscriber.AfterClusterNodeStabilized(ctx, objects)
 	}
 
 	return errUnknownCallback
@@ -265,6 +270,11 @@ func (c *debuggingCallbacks[T, U, PT, PU]) AfterClusterNodeDelete(ctx context.Co
 	return runNodeSubscriberCallback(ctx, c.ClusterManager, objects, afterDeleteCallback)
 }
 
+func (c *debuggingCallbacks[T, U, PT, PU]) AfterClusterNodeStabilized(ctx context.Context, objects *ClusterObjects[T, U, PT, PU]) error {
+	c.logger.Info("after cluster node stabilized", "objects", objects.String())
+	return runNodeSubscriberCallback(ctx, c.ClusterManager, objects, afterStabilizedCallback)
+}
+
 func (c *debuggingCallbacks[T, U, PT, PU]) BeforeClusterNodePodCreate(ctx context.Context, objects *ClusterObjects[T, U, PT, PU]) error {
 	c.logger.Info("before cluster node pod create", "objects", objects.String())
 	return runNodePodSubscriberCallback(ctx, c.ClusterManager, objects, beforeCreateCallback)
@@ -369,6 +379,10 @@ func (c *UnimplementedCallbacks[T, U, PT, PU]) BeforeClusterNodeDelete(ctx conte
 }
 
 func (c *UnimplementedCallbacks[T, U, PT, PU]) AfterClusterNodeDelete(ctx context.Context, objects *ClusterObjects[T, U, PT, PU]) error {
+	return nil
+}
+
+func (c *UnimplementedCallbacks[T, U, PT, PU]) AfterClusterNodeStabilized(ctx context.Context, objects *ClusterObjects[T, U, PT, PU]) error {
 	return nil
 }
 

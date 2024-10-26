@@ -104,7 +104,7 @@ var _ = BeforeSuite(func() {
 	})
 	Expect(err).ToNot(HaveOccurred())
 
-	err = New(k8sManager, testManager).Setup(suiteCtx)
+	err = New(k8sManager, testManager).Testing().Setup(suiteCtx)
 	Expect(err).ToNot(HaveOccurred())
 
 	go func() {
@@ -123,7 +123,7 @@ var _ = AfterSuite(func() {
 })
 
 var _ = Describe("Cluster controller", func() {
-	It("Should create nodes for the cluster", func() {
+	It("Should manage nodes for the cluster", func() {
 		ctx, cancel := context.WithTimeout(suiteCtx, 30*time.Second)
 		defer cancel()
 
@@ -142,6 +142,6 @@ var _ = Describe("Cluster controller", func() {
 		nodes, err := factory.WaitForStableNodes(ctx, 10*time.Second, cluster)
 		Expect(err).NotTo(HaveOccurred())
 
-		Expect(nodes).NotTo(HaveLen(3))
+		Expect(nodes).To(HaveLen(3))
 	})
 })

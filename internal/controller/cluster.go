@@ -5,12 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 
 	clusterv1alpha1 "github.com/andrewstucki/cluster-controller/api/v1alpha1"
 	k8sapierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/util/rand"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -21,33 +21,19 @@ import (
 
 type ClusterReconciler[T, U any, PT ptrToObject[T], PU ptrToObject[U]] struct {
 	config *Config[T, U, PT, PU]
-
-	indexPrefix string
 }
 
-func SetupClusterReconciler[T, U any, PT ptrToObject[T], PU ptrToObject[U]](ctx context.Context, mgr ctrl.Manager, config *Config[T, U, PT, PU]) error {
+func SetupClusterReconciler[T, U any, PT ptrToObject[T], PU ptrToObject[U]](mgr ctrl.Manager, config *Config[T, U, PT, PU]) error {
 	return (&ClusterReconciler[T, U, PT, PU]{
 		config: config,
-	}).setupWithManager(ctx, mgr)
+	}).setupWithManager(mgr)
 }
 
-func (r *ClusterReconciler[T, U, PT, PU]) setupWithManager(ctx context.Context, mgr ctrl.Manager) error {
-	r.indexPrefix = rand.String(10)
-
-	node := newKubeObject[U, PU]()
-
-	if err := indexOwnerObject(ctx, mgr, node, r.clusterNodeOwnerIndex()); err != nil {
-		return err
-	}
-
+func (r *ClusterReconciler[T, U, PT, PU]) setupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(newKubeObject[T, PT]()).
-		Owns(node).
+		Owns(newKubeObject[U, PU]()).
 		Complete(r)
-}
-
-func (r *ClusterReconciler[T, U, PT, PU]) clusterNodeOwnerIndex() string {
-	return r.indexPrefix + ".clusterNode" + ownerIndex
 }
 
 func (r *ClusterReconciler[T, U, PT, PU]) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -58,7 +44,7 @@ func (r *ClusterReconciler[T, U, PT, PU]) Reconcile(ctx context.Context, req ctr
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	nodes, err := r.getClusterNodes(ctx, cluster.GetName())
+	nodes, err := r.getClusterNodes(ctx, cluster.GetNamespace(), cluster.GetName())
 	if err != nil {
 		logger.Error(err, "fetching cluster nodes")
 		return ctrl.Result{}, err
@@ -90,10 +76,10 @@ func (r *ClusterReconciler[T, U, PT, PU]) Reconcile(ctx context.Context, req ctr
 		if updated {
 			r.config.Manager.SetClusterStatus(cluster, *status)
 			syncErr := r.config.Client.Status().Update(ctx, cluster)
-			return ctrl.Result{}, errors.Join(syncErr, err)
+			err = errors.Join(syncErr, err)
 		}
 
-		return ctrl.Result{}, err
+		return ignoreConflict(err)
 	}
 
 	// we are being deleted, clean up everything
@@ -123,13 +109,14 @@ func (r *ClusterReconciler[T, U, PT, PU]) Reconcile(ctx context.Context, req ctr
 		if controllerutil.RemoveFinalizer(cluster, r.config.Finalizer) {
 			if err := r.config.Client.Update(ctx, cluster); err != nil {
 				logger.Error(err, "updating cluster finalizer")
-				return ctrl.Result{}, err
+				return ignoreConflict(err)
 			}
 
-			if err := runSubscriberCallback(ctx, r.config.Manager, modifying, beforeDeleteCallback); err != nil {
+			if err := runSubscriberCallback(ctx, r.config.Manager, modifying, afterDeleteCallback); err != nil {
 				logger.Error(err, "after cluster termination (non-retryable)")
 			}
 		}
+
 		return ctrl.Result{}, nil
 	}
 
@@ -137,9 +124,15 @@ func (r *ClusterReconciler[T, U, PT, PU]) Reconcile(ctx context.Context, req ctr
 	if controllerutil.AddFinalizer(cluster, r.config.Finalizer) {
 		if err := r.config.Client.Update(ctx, cluster); err != nil {
 			logger.Error(err, "updating cluster finalizer")
-			return ctrl.Result{}, err
+			return ignoreConflict(err)
 		}
-		return ctrl.Result{}, err
+		return ctrl.Result{}, nil
+	}
+
+	// generate NextNode before doing anything
+	if status.NextNode == "" {
+		generateNextNode(cluster.GetName(), status)
+		return syncStatus(nil)
 	}
 
 	// General implementation:
@@ -259,6 +252,10 @@ func (r *ClusterReconciler[T, U, PT, PU]) decommissionNode(ctx context.Context, 
 		}
 	}
 
+	status.Nodes = slices.DeleteFunc(status.Nodes, func(name string) bool {
+		return node.GetName() == name
+	})
+
 	if err := runNodeSubscriberCallback(ctx, r.config.Manager, modifying, afterDecommissionCallback); err != nil {
 		return fmt.Errorf("running node after delete hook: %w", err)
 	}
@@ -268,7 +265,7 @@ func (r *ClusterReconciler[T, U, PT, PU]) decommissionNode(ctx context.Context, 
 
 func (r *ClusterReconciler[T, U, PT, PU]) createNode(ctx context.Context, status *clusterv1alpha1.ClusterStatus, cluster PT, hash string) error {
 	node := r.config.Manager.GetClusterNodeTemplate(cluster)
-	r.initNode(r.config.ClusterLabel, r.config.HashLabel, cluster, node, hash)
+	r.initNode(r.config.ClusterLabel, r.config.HashLabel, status, cluster, node, hash)
 
 	setPhase(cluster, status, initializingPhase(fmt.Sprintf("creating node \"%s/%s\"", node.GetNamespace(), node.GetName())))
 
@@ -277,9 +274,14 @@ func (r *ClusterReconciler[T, U, PT, PU]) createNode(ctx context.Context, status
 		return fmt.Errorf("running node before create hook: %w", err)
 	}
 
-	if err := r.config.Client.Patch(ctx, node, client.Apply, r.config.FieldOwner, client.ForceOwnership); err != nil {
+	if err := r.config.Client.Create(ctx, node); err != nil {
+		if k8sapierrors.IsAlreadyExists(err) {
+			return nil
+		}
 		return fmt.Errorf("creating node: %w", err)
 	}
+
+	status.Nodes = append(status.Nodes, node.GetName())
 
 	if err := runNodeSubscriberCallback(ctx, r.config.Manager, modifying, afterCreateCallback); err != nil {
 		return fmt.Errorf("running node after create hook: %w", err)
@@ -290,7 +292,7 @@ func (r *ClusterReconciler[T, U, PT, PU]) createNode(ctx context.Context, status
 
 func (r *ClusterReconciler[T, U, PT, PU]) updateNode(ctx context.Context, status *clusterv1alpha1.ClusterStatus, cluster PT, node PU, hash string) error {
 	updated := r.config.Manager.GetClusterNodeTemplate(cluster)
-	r.initNode(r.config.ClusterLabel, r.config.HashLabel, cluster, updated, hash)
+	r.initNode(r.config.ClusterLabel, r.config.HashLabel, status, cluster, updated, hash)
 	updated.SetName(node.GetName())
 
 	r.config.Manager.MergeClusterNodes(node, updated)
@@ -306,7 +308,7 @@ func (r *ClusterReconciler[T, U, PT, PU]) updateNode(ctx context.Context, status
 		return fmt.Errorf("running node before update hook: %w", err)
 	}
 
-	if err := r.config.Client.Patch(ctx, node, client.Apply, r.config.FieldOwner, client.ForceOwnership); err != nil {
+	if err := r.config.Client.Update(ctx, node); err != nil {
 		return fmt.Errorf("updating node: %w", err)
 	}
 
@@ -317,15 +319,14 @@ func (r *ClusterReconciler[T, U, PT, PU]) updateNode(ctx context.Context, status
 	return nil
 }
 
-func (r *ClusterReconciler[T, U, PT, PU]) initNode(clusterLabel, hashLabel string, cluster PT, node PU, hash string) {
-	node.SetName(cluster.GetName() + fmt.Sprintf("-%s", rand.String(8)))
+func (r *ClusterReconciler[T, U, PT, PU]) initNode(clusterLabel, hashLabel string, status *clusterv1alpha1.ClusterStatus, cluster PT, node PU, hash string) {
+	node.SetName(generateNextNode(cluster.GetName(), status))
 	node.SetNamespace(cluster.GetNamespace())
 
 	kinds, _, _ := r.config.Scheme.ObjectKinds(node)
 	kind := kinds[0]
 
 	node.GetObjectKind().SetGroupVersionKind(kind)
-
 	node.SetOwnerReferences([]metav1.OwnerReference{*metav1.NewControllerRef(cluster, cluster.GetObjectKind().GroupVersionKind())})
 
 	labels := node.GetLabels()
@@ -338,7 +339,7 @@ func (r *ClusterReconciler[T, U, PT, PU]) initNode(clusterLabel, hashLabel strin
 	node.SetLabels(labels)
 }
 
-func (r *ClusterReconciler[T, U, PT, PU]) getClusterNodes(ctx context.Context, clusterName string) ([]PU, error) {
+func (r *ClusterReconciler[T, U, PT, PU]) getClusterNodes(ctx context.Context, namespace, clusterName string) ([]PU, error) {
 	kinds, _, err := r.config.Scheme.ObjectKinds(newKubeObject[U, PU]())
 	if err != nil {
 		return nil, fmt.Errorf("fetching object kind: %w", err)
@@ -358,8 +359,8 @@ func (r *ClusterReconciler[T, U, PT, PU]) getClusterNodes(ctx context.Context, c
 		return nil, fmt.Errorf("invalid object list type: %T", o)
 	}
 
-	if err := r.config.Client.List(ctx, list, &client.ListOptions{
-		FieldSelector: fields.OneTermEqualSelector(r.clusterNodeOwnerIndex(), clusterName),
+	if err := r.config.Client.List(ctx, list, client.InNamespace(namespace), client.MatchingLabels{
+		r.config.ClusterLabel: clusterName,
 	}); err != nil {
 		return nil, fmt.Errorf("listing cluster nodes: %w", err)
 	}
@@ -404,4 +405,10 @@ func isNodeHealthy(status *clusterv1alpha1.ClusterNodeStatus) bool {
 
 func isNodeRunning(status *clusterv1alpha1.ClusterNodeStatus) bool {
 	return status.Running
+}
+
+func generateNextNode(clusterName string, status *clusterv1alpha1.ClusterStatus) string {
+	previousNode := status.NextNode
+	status.NextNode = clusterName + fmt.Sprintf("-%s", rand.String(8))
+	return previousNode
 }

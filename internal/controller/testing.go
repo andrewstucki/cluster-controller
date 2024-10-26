@@ -71,7 +71,7 @@ func (f *TestClusterFactory[T, U, PT, PU]) WaitForStableNodes(ctx context.Contex
 		}
 
 		if len(nodes) != f.TestManager.GetClusterReplicas(cluster) {
-			return errors.New("cluster node length doesn't match")
+			return fmt.Errorf("cluster node length doesn't match: %d != %d", len(nodes), f.TestManager.GetClusterReplicas(cluster))
 		}
 
 		for _, node := range nodes {

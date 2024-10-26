@@ -121,7 +121,7 @@ type ClusterNodeStatus struct {
 	// +optional
 	CurrentVersion string `json:"currentRevision,omitempty"`
 	// +optional
-	Phase Phase `json:"phase,omitempty"`
+	Phase *Phase `json:"phase,omitempty"`
 	// +optional
 	Running bool `json:"running,omitempty"`
 	// +optional
@@ -133,17 +133,24 @@ type ClusterNodeStatus struct {
 }
 
 func (s *ClusterNodeStatus) SetPhase(phase Phase) {
-	s.Phase = phase
+	s.Phase = &phase
 }
 
 func (s *ClusterNodeStatus) GetPhase() Phase {
-	return s.Phase
+	if s.Phase == nil {
+		return Phase{}
+	}
+	return *s.Phase
 }
 
 // ClusterStatus defines the observed state of Cluster
 type ClusterStatus struct {
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+	// +optional
+	NextNode string `json:"nextNode,omitempty"`
+	// +optional
+	Nodes []string `json:"nodes,omitempty"`
 	// +optional
 	Replicas int `json:"replicas,omitempty"`
 	// +optional
@@ -155,15 +162,18 @@ type ClusterStatus struct {
 	// +optional
 	RunningReplicas int `json:"runningReplicas,omitempty"`
 	// +optional
-	Phase Phase `json:"phase,omitempty"`
+	Phase *Phase `json:"phase,omitempty"`
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
 
 func (s *ClusterStatus) SetPhase(phase Phase) {
-	s.Phase = phase
+	s.Phase = &phase
 }
 
 func (s *ClusterStatus) GetPhase() Phase {
-	return s.Phase
+	if s.Phase == nil {
+		return Phase{}
+	}
+	return *s.Phase
 }

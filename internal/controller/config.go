@@ -7,6 +7,7 @@ import (
 	clusterv1alpha1 "github.com/andrewstucki/cluster-controller/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/rand"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -45,6 +46,8 @@ type Config[T, U any, PT ptrToObject[T], PU ptrToObject[U]] struct {
 	HashLabel    string
 	ClusterLabel string
 	Finalizer    string
+	IndexPrefix  string
+	Testing      bool
 }
 
 type ConfigBuilder[T, U any, PT ptrToObject[T], PU ptrToObject[U]] struct {
@@ -54,6 +57,8 @@ type ConfigBuilder[T, U any, PT ptrToObject[T], PU ptrToObject[U]] struct {
 	hashLabel      string
 	clusterLabel   string
 	finalizer      string
+	indexPrefix    string
+	testing        bool
 }
 
 func New[T, U any, PT ptrToObject[T], PU ptrToObject[U]](runtimeManager ctrl.Manager, manager ClusterManager[T, U, PT, PU]) *ConfigBuilder[T, U, PT, PU] {
@@ -64,6 +69,8 @@ func New[T, U any, PT ptrToObject[T], PU ptrToObject[U]](runtimeManager ctrl.Man
 		hashLabel:      defaultHashLabel,
 		clusterLabel:   defaultClusterLabel,
 		finalizer:      defaultFinalizer,
+		indexPrefix:    rand.String(4),
+		testing:        false,
 	}
 }
 
@@ -87,7 +94,13 @@ func (c *ConfigBuilder[T, U, PT, PU]) WithClusterLabel(label string) *ConfigBuil
 	return c
 }
 
+func (c *ConfigBuilder[T, U, PT, PU]) Testing() *ConfigBuilder[T, U, PT, PU] {
+	c.testing = true
+	return c
+}
+
 func (c *ConfigBuilder[T, U, PT, PU]) Setup(ctx context.Context) error {
+
 	config := &Config[T, U, PT, PU]{
 		Scheme:       c.runtimeManager.GetScheme(),
 		Client:       c.runtimeManager.GetClient(),
@@ -96,9 +109,11 @@ func (c *ConfigBuilder[T, U, PT, PU]) Setup(ctx context.Context) error {
 		ClusterLabel: c.clusterLabel,
 		FieldOwner:   c.fieldOwner,
 		Finalizer:    c.finalizer,
+		IndexPrefix:  c.indexPrefix,
+		Testing:      c.testing,
 	}
 
-	if err := SetupClusterReconciler(ctx, c.runtimeManager, config); err != nil {
+	if err := SetupClusterReconciler(c.runtimeManager, config); err != nil {
 		return fmt.Errorf("setting up cluster reconciler: %w", err)
 	}
 

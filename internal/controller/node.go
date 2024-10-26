@@ -14,7 +14,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/rand"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -24,8 +23,6 @@ import (
 
 type ClusterNodeReconciler[T, U any, PT ptrToObject[T], PU ptrToObject[U]] struct {
 	config *Config[T, U, PT, PU]
-
-	indexPrefix string
 }
 
 func SetupClusterNodeReconciler[T, U any, PT ptrToObject[T], PU ptrToObject[U]](ctx context.Context, mgr ctrl.Manager, config *Config[T, U, PT, PU]) error {
@@ -35,20 +32,18 @@ func SetupClusterNodeReconciler[T, U any, PT ptrToObject[T], PU ptrToObject[U]](
 }
 
 func (r *ClusterNodeReconciler[T, U, PT, PU]) podOwnerIndex() string {
-	return r.indexPrefix + ".pod" + ownerIndex
+	return r.config.IndexPrefix + ".pod" + ownerIndex
 }
 
 func (r *ClusterNodeReconciler[T, U, PT, PU]) pvcOwnerIndex() string {
-	return r.indexPrefix + ".pvc" + ownerIndex
+	return r.config.IndexPrefix + ".pvc" + ownerIndex
 }
 
 func (r *ClusterNodeReconciler[T, U, PT, PU]) pvOwnerIndex() string {
-	return r.indexPrefix + ".pv" + ownerIndex
+	return r.config.IndexPrefix + ".pv" + ownerIndex
 }
 
 func (r *ClusterNodeReconciler[T, U, PT, PU]) setupWithManager(ctx context.Context, mgr ctrl.Manager) error {
-	r.indexPrefix = rand.String(10)
-
 	if err := indexOwner[corev1.Pod](ctx, mgr, r.podOwnerIndex()); err != nil {
 		return err
 	}
@@ -70,6 +65,8 @@ func (r *ClusterNodeReconciler[T, U, PT, PU]) setupWithManager(ctx context.Conte
 }
 
 func (r *ClusterNodeReconciler[T, U, PT, PU]) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	deploymentFirstStabilized := false
+
 	logger := log.FromContext(ctx)
 
 	node := newKubeObject[U, PU]()
@@ -119,12 +116,16 @@ func (r *ClusterNodeReconciler[T, U, PT, PU]) Reconcile(ctx context.Context, req
 	}
 
 	markPodIfReady := func(pod *corev1.Pod) {
-		status.Healthy = isHealthy(pod)
-		status.Running = isRunningAndReady(pod)
+		status.Healthy = isHealthy(r.config.Testing, pod)
+		status.Running = isRunningAndReady(r.config.Testing, pod)
 
-		if isHealthy(pod) {
+		if isHealthy(r.config.Testing, pod) {
 			// we have a one way operation of setting this as fully ready for the current cluster
-			status.MatchesCluster = true
+			if !status.MatchesCluster {
+				// we now have an initially deployed node
+				deploymentFirstStabilized = true
+				status.MatchesCluster = true
+			}
 			setPhase(node, status, readyPhase("cluster node ready"))
 		}
 	}
@@ -138,13 +139,25 @@ func (r *ClusterNodeReconciler[T, U, PT, PU]) Reconcile(ctx context.Context, req
 				updated = true
 			}
 		}
+
+		if deploymentFirstStabilized {
+			// we tell our manager that we are now stabilized, we special case our error here
+			// so that we retry if it fails without setting our status in case this is a fully needed
+			// operation
+			objects := &ClusterObjects[T, U, PT, PU]{Cluster: cluster, Node: node}
+			if err := runNodeSubscriberCallback(ctx, r.config.Manager, objects, afterStabilizedCallback); err != nil {
+				logger.Error(err, "running node stabilized callback")
+				return ctrl.Result{Requeue: true}, nil
+			}
+		}
+
 		if updated {
 			r.config.Manager.SetClusterNodeStatus(node, *status)
 			syncErr := r.config.Client.Status().Update(ctx, node)
-			return ctrl.Result{}, errors.Join(syncErr, err)
+			err = errors.Join(syncErr, err)
 		}
 
-		return ctrl.Result{}, err
+		return ignoreConflict(err)
 	}
 
 	// we are being deleted, clean up everything
@@ -189,10 +202,10 @@ func (r *ClusterNodeReconciler[T, U, PT, PU]) Reconcile(ctx context.Context, req
 		if controllerutil.RemoveFinalizer(node, r.config.Finalizer) {
 			if err := r.config.Client.Update(ctx, node); err != nil {
 				logger.Error(err, "updating node finalizer")
-				return ctrl.Result{}, err
+				return ignoreConflict(err)
 			}
 
-			if err := runNodeSubscriberCallback(ctx, r.config.Manager, modifying, beforeDeleteCallback); err != nil {
+			if err := runNodeSubscriberCallback(ctx, r.config.Manager, modifying, afterDeleteCallback); err != nil {
 				logger.Error(err, "after node termination (non-retryable)")
 			}
 		}
@@ -203,7 +216,7 @@ func (r *ClusterNodeReconciler[T, U, PT, PU]) Reconcile(ctx context.Context, req
 	if controllerutil.AddFinalizer(node, r.config.Finalizer) {
 		if err := r.config.Client.Update(ctx, node); err != nil {
 			logger.Error(err, "updating node finalizer")
-			return ctrl.Result{}, err
+			return ignoreConflict(err)
 		}
 		return ctrl.Result{}, nil
 	}
@@ -254,11 +267,12 @@ func (r *ClusterNodeReconciler[T, U, PT, PU]) Reconcile(ctx context.Context, req
 	}
 
 	// if we detect a pod as finished, attempt to restart it
-	if isFailed(pod) || isSucceeded(pod) {
+	if isFailed(r.config.Testing, pod) || isSucceeded(r.config.Testing, pod) {
 		if err := r.restartPod(ctx, status, cluster, node, pod); err != nil {
 			logger.Error(err, "restarting stopped pod")
 			return syncStatus(err)
 		}
+
 		return syncStatus(nil)
 	}
 

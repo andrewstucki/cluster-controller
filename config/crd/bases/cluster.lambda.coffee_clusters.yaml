@@ -147,6 +147,12 @@ spec:
                 type: array
               healthyReplicas:
                 type: integer
+              nextNode:
+                type: string
+              nodes:
+                items:
+                  type: string
+                type: array
               observedGeneration:
                 format: int64
                 type: integer
