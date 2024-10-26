@@ -295,7 +295,11 @@ func (r *ClusterReconciler[T, U, PT, PU]) updateNode(ctx context.Context, status
 	r.initNode(r.config.ClusterLabel, r.config.HashLabel, status, cluster, updated, hash)
 	updated.SetName(node.GetName())
 
-	r.config.Manager.MergeClusterNodes(node, updated)
+	// set the spec from the updated node if the node has a Spec field
+	specValue := reflect.ValueOf(node).Elem().FieldByName("Spec")
+	if specValue.IsValid() && specValue.CanSet() {
+		specValue.Set(reflect.ValueOf(updated).Elem().FieldByName("Spec"))
+	}
 
 	labels := node.GetLabels()
 	labels[r.config.HashLabel] = hash

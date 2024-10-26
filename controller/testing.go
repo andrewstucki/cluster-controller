@@ -331,8 +331,6 @@ func (t *TestManager[T, U, PT, PU]) HashClusterNode(node PU) (string, error) {
 	return c.GetHashClusterNodeResponse()
 }
 
-func (t *TestManager[T, U, PT, PU]) MergeClusterNodes(lhs, rhs PU) {}
-
 func (t *TestManager[T, U, PT, PU]) GetClusterNodeStatus(node PU) clusterv1alpha1.ClusterNodeStatus {
 	c, err := t.ClusterNode(client.ObjectKeyFromObject(node))
 	if err != nil {

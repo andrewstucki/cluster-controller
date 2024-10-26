@@ -73,15 +73,9 @@ var _ = BeforeSuite(func() {
 
 	By("bootstrapping test environment")
 	testEnv = &envtest.Environment{
-		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "config", "crd", "bases")},
+		CRDDirectoryPaths:     []string{filepath.Join("..", "config", "crd", "bases")},
 		ErrorIfCRDPathMissing: true,
-
-		// The BinaryAssetsDirectory is only required if you want to run the tests directly
-		// without call the makefile target test. If not informed it will look for the
-		// default path defined in controller-runtime which is /usr/local/kubebuilder/.
-		// Note that you must have the required binaries setup under the bin directory to perform
-		// the tests directly. When we run make test it will be setup and used automatically.
-		BinaryAssetsDirectory: filepath.Join("..", "..", "bin", "k8s",
+		BinaryAssetsDirectory: filepath.Join("..", "bin", "k8s",
 			fmt.Sprintf("1.30.0-%s-%s", runtime.GOOS, runtime.GOARCH)),
 	}
 
@@ -142,6 +136,14 @@ var _ = Describe("Cluster controller", func() {
 		nodes, err := factory.WaitForStableNodes(ctx, 10*time.Second, cluster)
 		Expect(err).NotTo(HaveOccurred())
 
+		Expect(nodes).To(HaveLen(3))
+
+		factory.DeleteNode(ctx, nodes[0])
+
+		nodes, err = factory.WaitForStableNodes(ctx, 10*time.Second, cluster)
+		Expect(err).NotTo(HaveOccurred())
+
+		// make sure the node gets recreated
 		Expect(nodes).To(HaveLen(3))
 	})
 })

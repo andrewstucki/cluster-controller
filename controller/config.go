@@ -23,7 +23,6 @@ type ClusterManager[T, U any, PT ptrToObject[T], PU ptrToObject[U]] interface {
 
 	// Nodes
 	HashClusterNode(node PU) (string, error)
-	MergeClusterNodes(lhs, rhs PU)
 	GetClusterNodeStatus(node PU) clusterv1alpha1.ClusterNodeStatus
 	SetClusterNodeStatus(node PU, status clusterv1alpha1.ClusterNodeStatus)
 	GetClusterNodePodSpec(node PU) *corev1.PodTemplateSpec
@@ -32,22 +31,26 @@ type ClusterManager[T, U any, PT ptrToObject[T], PU ptrToObject[U]] interface {
 }
 
 const (
-	defaultFieldOwner   = "cluster-controller"
-	defaultHashLabel    = "cluster-hash"
-	defaultClusterLabel = "cluster-name"
-	defaultFinalizer    = "cluster-finalizer"
+	defaultFieldOwner     = "cluster-controller"
+	defaultHashLabel      = "cluster-hash"
+	defaultClusterLabel   = "cluster-name"
+	defaultNodeLabel      = "cluster-node-name"
+	defaultNamespaceLabel = "cluster-namespace"
+	defaultFinalizer      = "cluster-finalizer"
 )
 
 type Config[T, U any, PT ptrToObject[T], PU ptrToObject[U]] struct {
-	Scheme       *runtime.Scheme
-	Client       client.Client
-	Manager      ClusterManager[T, U, PT, PU]
-	FieldOwner   client.FieldOwner
-	HashLabel    string
-	ClusterLabel string
-	Finalizer    string
-	IndexPrefix  string
-	Testing      bool
+	Scheme         *runtime.Scheme
+	Client         client.Client
+	Manager        ClusterManager[T, U, PT, PU]
+	FieldOwner     client.FieldOwner
+	HashLabel      string
+	NamespaceLabel string
+	NodeLabel      string
+	ClusterLabel   string
+	Finalizer      string
+	IndexPrefix    string
+	Testing        bool
 }
 
 type ConfigBuilder[T, U any, PT ptrToObject[T], PU ptrToObject[U]] struct {
@@ -56,6 +59,8 @@ type ConfigBuilder[T, U any, PT ptrToObject[T], PU ptrToObject[U]] struct {
 	fieldOwner     client.FieldOwner
 	hashLabel      string
 	clusterLabel   string
+	nodeLabel      string
+	namespaceLabel string
 	finalizer      string
 	indexPrefix    string
 	testing        bool
@@ -68,6 +73,8 @@ func New[T, U any, PT ptrToObject[T], PU ptrToObject[U]](runtimeManager ctrl.Man
 		fieldOwner:     defaultFieldOwner,
 		hashLabel:      defaultHashLabel,
 		clusterLabel:   defaultClusterLabel,
+		nodeLabel:      defaultNodeLabel,
+		namespaceLabel: defaultNamespaceLabel,
 		finalizer:      defaultFinalizer,
 		indexPrefix:    rand.String(4),
 		testing:        false,
@@ -94,6 +101,16 @@ func (c *ConfigBuilder[T, U, PT, PU]) WithClusterLabel(label string) *ConfigBuil
 	return c
 }
 
+func (c *ConfigBuilder[T, U, PT, PU]) WithNodeLabel(label string) *ConfigBuilder[T, U, PT, PU] {
+	c.nodeLabel = label
+	return c
+}
+
+func (c *ConfigBuilder[T, U, PT, PU]) WithNamespaceLabel(label string) *ConfigBuilder[T, U, PT, PU] {
+	c.namespaceLabel = label
+	return c
+}
+
 func (c *ConfigBuilder[T, U, PT, PU]) Testing() *ConfigBuilder[T, U, PT, PU] {
 	c.testing = true
 	return c
@@ -102,15 +119,17 @@ func (c *ConfigBuilder[T, U, PT, PU]) Testing() *ConfigBuilder[T, U, PT, PU] {
 func (c *ConfigBuilder[T, U, PT, PU]) Setup(ctx context.Context) error {
 
 	config := &Config[T, U, PT, PU]{
-		Scheme:       c.runtimeManager.GetScheme(),
-		Client:       c.runtimeManager.GetClient(),
-		Manager:      c.manager,
-		HashLabel:    c.hashLabel,
-		ClusterLabel: c.clusterLabel,
-		FieldOwner:   c.fieldOwner,
-		Finalizer:    c.finalizer,
-		IndexPrefix:  c.indexPrefix,
-		Testing:      c.testing,
+		Scheme:         c.runtimeManager.GetScheme(),
+		Client:         c.runtimeManager.GetClient(),
+		Manager:        c.manager,
+		HashLabel:      c.hashLabel,
+		ClusterLabel:   c.clusterLabel,
+		NodeLabel:      c.nodeLabel,
+		NamespaceLabel: c.namespaceLabel,
+		FieldOwner:     c.fieldOwner,
+		Finalizer:      c.finalizer,
+		IndexPrefix:    c.indexPrefix,
+		Testing:        c.testing,
 	}
 
 	if err := SetupClusterReconciler(c.runtimeManager, config); err != nil {

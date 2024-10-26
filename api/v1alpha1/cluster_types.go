@@ -1,96 +1,9 @@
-/*
-Copyright 2024.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
-
+// +kubebuilder:object:generate=true
 package v1alpha1
 
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
-
-// EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
-// NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
-
-const (
-	// ClusterKind is the name of the cluster kind
-	ClusterKind = "Cluster"
-)
-
-// ClusterSpec defines the desired state of Cluster
-type ClusterSpec struct {
-	// +kubebuilder:validation:Minimum=1
-	// +kubebuilder:default:=1
-	Replicas int `json:"replicas"`
-	// +optional
-	MinimumHealthyReplicas int `json:"minimumHealthyReplicas,omitempty"`
-}
-
-// +kubebuilder:object:root=true
-// +kubebuilder:subresource:status
-// +kubebuilder:printcolumn:name="Cluster",type="string",JSONPath=`.metadata.labels['example-cluster-name']`
-// +kubebuilder:printcolumn:name="Phase",type="string",JSONPath=`.status.phase.name`
-// +kubebuilder:printcolumn:name="Message",type="string",priority=1,JSONPath=`.status.phase.message`
-// +kubebuilder:printcolumn:name="Running",type="boolean",JSONPath=`.status.running`
-// +kubebuilder:printcolumn:name="Healthy",type="boolean",JSONPath=`.status.healthy`
-type Broker struct {
-	metav1.TypeMeta   `json:",inline"`
-	metav1.ObjectMeta `json:"metadata,omitempty"`
-
-	Status ClusterNodeStatus `json:"status,omitempty"`
-}
-
-// +kubebuilder:object:root=true
-// +kubebuilder:subresource:status
-// +kubebuilder:printcolumn:name="Replicas",type="integer",JSONPath=`.status.replicas`
-// +kubebuilder:printcolumn:name="Running Nodes",type="integer",JSONPath=`.status.runningReplicas`
-// +kubebuilder:printcolumn:name="Healthy Nodes",type="integer",JSONPath=`.status.healthyReplicas`
-// +kubebuilder:printcolumn:name="Phase",type="string",JSONPath=`.status.phase.name`
-// +kubebuilder:printcolumn:name="Message",type="string",priority=1,JSONPath=`.status.phase.message`
-// +kubebuilder:printcolumn:name="Up-to-date Nodes",type="integer",priority=1,JSONPath=`.status.upToDateReplicas`
-// +kubebuilder:printcolumn:name="Out-of-date Nodes",type="integer",priority=1,JSONPath=`.status.outOfDateReplicas`
-// Cluster is the Schema for the Clusters API
-type Cluster struct {
-	metav1.TypeMeta   `json:",inline"`
-	metav1.ObjectMeta `json:"metadata,omitempty"`
-
-	Spec   ClusterSpec   `json:"spec,omitempty"`
-	Status ClusterStatus `json:"status,omitempty"`
-}
-
-// +kubebuilder:object:root=true
-
-// ClusterList contains a list of Cluster
-type ClusterList struct {
-	metav1.TypeMeta `json:",inline"`
-	metav1.ListMeta `json:"metadata,omitempty"`
-	Items           []Cluster `json:"items"`
-}
-
-// +kubebuilder:object:root=true
-
-// BrokerList contains a list of Broker
-type BrokerList struct {
-	metav1.TypeMeta `json:",inline"`
-	metav1.ListMeta `json:"metadata,omitempty"`
-	Items           []Broker `json:"items"`
-}
-
-func init() {
-	SchemeBuilder.Register(&Cluster{}, &ClusterList{})
-	SchemeBuilder.Register(&Broker{}, &BrokerList{})
-}
 
 type Phase struct {
 	// +required

@@ -4,7 +4,6 @@
 resources:
 - bases/cluster.lambda.coffee_clusters.yaml
 - bases/cluster.lambda.coffee_brokers.yaml
-# +kubebuilder:scaffold:crdkustomizeresource
 
 patches:
 # [WEBHOOK] To enable webhook, uncomment all the sections with [WEBHOOK] prefix.

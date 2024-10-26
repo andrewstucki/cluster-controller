@@ -18,7 +18,9 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
 type ClusterNodeReconciler[T, U any, PT ptrToObject[T], PU ptrToObject[U]] struct {
@@ -39,28 +41,38 @@ func (r *ClusterNodeReconciler[T, U, PT, PU]) pvcOwnerIndex() string {
 	return r.config.IndexPrefix + ".pvc" + ownerIndex
 }
 
-func (r *ClusterNodeReconciler[T, U, PT, PU]) pvOwnerIndex() string {
-	return r.config.IndexPrefix + ".pv" + ownerIndex
-}
-
 func (r *ClusterNodeReconciler[T, U, PT, PU]) setupWithManager(ctx context.Context, mgr ctrl.Manager) error {
-	if err := indexOwner[corev1.Pod](ctx, mgr, r.podOwnerIndex()); err != nil {
+	kind, err := getRegisteredSchemaKind(r.config.Scheme, newKubeObject[U, PU]())
+	if err != nil {
 		return err
 	}
 
-	if err := indexOwner[corev1.PersistentVolumeClaim](ctx, mgr, r.pvcOwnerIndex()); err != nil {
+	if err := indexOwner[corev1.Pod](ctx, mgr, kind, r.podOwnerIndex()); err != nil {
 		return err
 	}
 
-	if err := indexOwner[corev1.PersistentVolume](ctx, mgr, r.pvOwnerIndex()); err != nil {
+	if err := indexOwner[corev1.PersistentVolumeClaim](ctx, mgr, kind, r.pvcOwnerIndex()); err != nil {
 		return err
 	}
 
 	return ctrl.NewControllerManagedBy(mgr).
 		For(newKubeObject[U, PU]()).
 		Owns(&corev1.Pod{}).
-		Owns(&corev1.PersistentVolume{}).
 		Owns(&corev1.PersistentVolumeClaim{}).
+		// since PVs are cluster-scoped we need to call a Watch on them with some
+		// custom mappings
+		Watches(&corev1.PersistentVolume{}, handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, o client.Object) []reconcile.Request {
+			if labels := o.GetLabels(); labels != nil {
+				namespace := labels[r.config.NamespaceLabel]
+				name := labels[r.config.NodeLabel]
+				if namespace != "" && name != "" {
+					return []reconcile.Request{{
+						NamespacedName: types.NamespacedName{Namespace: namespace, Name: name},
+					}}
+				}
+			}
+			return nil
+		})).
 		Complete(r)
 }
 
@@ -71,6 +83,7 @@ func (r *ClusterNodeReconciler[T, U, PT, PU]) Reconcile(ctx context.Context, req
 
 	node := newKubeObject[U, PU]()
 	if err := r.config.Client.Get(ctx, req.NamespacedName, node); err != nil {
+		fmt.Println("not found")
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
@@ -80,24 +93,25 @@ func (r *ClusterNodeReconciler[T, U, PT, PU]) Reconcile(ctx context.Context, req
 		return ctrl.Result{}, err
 	}
 	if cluster == nil {
+		fmt.Println("no cluster")
 		// we have no cluster that this node is associated with, which isn't supported
 		// so just ignore this node
 		return ctrl.Result{}, nil
 	}
 
-	pods, err := r.getClusterPods(ctx, node.GetName())
+	pods, err := r.getClusterPods(ctx, req.String())
 	if err != nil {
 		logger.Error(err, "fetching cluster pods")
 		return ctrl.Result{}, err
 	}
 
-	pvcs, err := r.getPersistentVolumeClaims(ctx, node.GetName())
+	pvcs, err := r.getPersistentVolumeClaims(ctx, req.String())
 	if err != nil {
 		logger.Error(err, "fetching persistent volume claims")
 		return ctrl.Result{}, err
 	}
 
-	pvs, err := r.getPersistentVolumes(ctx, node.GetName())
+	pvs, err := r.getPersistentVolumes(ctx, node)
 	if err != nil {
 		logger.Error(err, "fetching persistent volumes")
 		return ctrl.Result{}, err
@@ -385,7 +399,7 @@ func (r *ClusterNodeReconciler[T, U, PT, PU]) createPod(ctx context.Context, sta
 		return nil, fmt.Errorf("getting list of pvcs: %w", err)
 	}
 
-	version, err := r.initPod(node, pod, needed)
+	version, err := r.initPod(node, pod, found)
 	if err != nil {
 		return nil, fmt.Errorf("initializing pod template: %w", err)
 	}
@@ -393,6 +407,10 @@ func (r *ClusterNodeReconciler[T, U, PT, PU]) createPod(ctx context.Context, sta
 	for _, claim := range found {
 		volumes = append(volumes, fmt.Sprintf("\"%s/%s\"", claim.Namespace, claim.Name))
 	}
+
+	sort.SliceStable(volumes, func(i, j int) bool {
+		return volumes[i] < volumes[j]
+	})
 
 	message := fmt.Sprintf("initializing pod \"%s/%s\"", pod.Namespace, pod.Name)
 	if len(volumes) != 0 {
@@ -585,10 +603,10 @@ func (r *ClusterNodeReconciler[T, U, PT, PU]) getCluster(ctx context.Context, no
 	return cluster, nil
 }
 
-func (r *ClusterNodeReconciler[T, U, PT, PU]) getClusterPods(ctx context.Context, nodeName string) ([]*corev1.Pod, error) {
+func (r *ClusterNodeReconciler[T, U, PT, PU]) getClusterPods(ctx context.Context, nodeID string) ([]*corev1.Pod, error) {
 	var pods corev1.PodList
 	if err := r.config.Client.List(ctx, &pods, &client.ListOptions{
-		FieldSelector: fields.OneTermEqualSelector(r.podOwnerIndex(), nodeName),
+		FieldSelector: fields.OneTermEqualSelector(r.podOwnerIndex(), nodeID),
 	}); err != nil {
 		return nil, err
 	}
@@ -601,10 +619,10 @@ func (r *ClusterNodeReconciler[T, U, PT, PU]) getClusterPods(ctx context.Context
 	return sortCreation(items), nil
 }
 
-func (r *ClusterNodeReconciler[T, U, PT, PU]) getPersistentVolumeClaims(ctx context.Context, nodeName string) ([]*corev1.PersistentVolumeClaim, error) {
+func (r *ClusterNodeReconciler[T, U, PT, PU]) getPersistentVolumeClaims(ctx context.Context, nodeID string) ([]*corev1.PersistentVolumeClaim, error) {
 	var pvcs corev1.PersistentVolumeClaimList
 	if err := r.config.Client.List(ctx, &pvcs, &client.ListOptions{
-		FieldSelector: fields.OneTermEqualSelector(r.pvcOwnerIndex(), nodeName),
+		FieldSelector: fields.OneTermEqualSelector(r.pvcOwnerIndex(), nodeID),
 	}); err != nil {
 		return nil, err
 	}
@@ -617,10 +635,11 @@ func (r *ClusterNodeReconciler[T, U, PT, PU]) getPersistentVolumeClaims(ctx cont
 	return sortCreation(items), nil
 }
 
-func (r *ClusterNodeReconciler[T, U, PT, PU]) getPersistentVolumes(ctx context.Context, nodeName string) ([]*corev1.PersistentVolume, error) {
+func (r *ClusterNodeReconciler[T, U, PT, PU]) getPersistentVolumes(ctx context.Context, node PU) ([]*corev1.PersistentVolume, error) {
 	var pvs corev1.PersistentVolumeList
-	if err := r.config.Client.List(ctx, &pvs, &client.ListOptions{
-		FieldSelector: fields.OneTermEqualSelector(r.pvOwnerIndex(), nodeName),
+	if err := r.config.Client.List(ctx, &pvs, &client.MatchingLabels{
+		r.config.NamespaceLabel: node.GetNamespace(),
+		r.config.NodeLabel:      node.GetName(),
 	}); err != nil {
 		return nil, err
 	}
@@ -645,10 +664,10 @@ func sortCreation[T client.Object](objects []T) []T {
 	return objects
 }
 
-func neededPersistentVolumeObjects[T client.Object](node client.Object, volumes []corev1.Volume, existing, desired []T, initializer func(node client.Object, o T) error) (map[string]T, []T, []types.NamespacedName, error) {
+func neededPersistentVolumeObjects[T client.Object](node client.Object, volumes []corev1.Volume, existing, desired []T, initializer func(node client.Object, o T) error) (map[string]T, []T, map[string]types.NamespacedName, error) {
 	neededSet := map[string]T{}
 	unusedSet := map[types.NamespacedName]T{}
-	foundSet := map[types.NamespacedName]struct{}{}
+	foundSet := map[string]types.NamespacedName{}
 	referencedSet := map[string]struct{}{}
 	for _, o := range existing {
 		unusedSet[client.ObjectKeyFromObject(o)] = o
@@ -669,7 +688,7 @@ func neededPersistentVolumeObjects[T client.Object](node client.Object, volumes 
 
 		_, referenced := referencedSet[originalName]
 		if referenced {
-			foundSet[client.ObjectKeyFromObject(o)] = struct{}{}
+			foundSet[originalName] = client.ObjectKeyFromObject(o)
 		}
 
 		if _, has := unusedSet[client.ObjectKeyFromObject(o)]; has {
@@ -684,31 +703,22 @@ func neededPersistentVolumeObjects[T client.Object](node client.Object, volumes 
 	}
 
 	unused := []T{}
-	found := []types.NamespacedName{}
 	for _, o := range unusedSet {
 		unused = append(unused, o)
 	}
-	for o := range foundSet {
-		found = append(found, o)
-	}
 
-	sort.SliceStable(found, func(i, j int) bool {
-		a, b := found[i], found[j]
-		return a.String() < b.String()
-	})
-
-	return neededSet, sortCreation(unused), found, nil
+	return neededSet, sortCreation(unused), foundSet, nil
 }
 
-func (r *ClusterNodeReconciler[T, U, PT, PU]) neededPersistentVolumes(node PU, existing []*corev1.PersistentVolume) (map[string]*corev1.PersistentVolume, []*corev1.PersistentVolume, []types.NamespacedName, error) {
-	return neededPersistentVolumeObjects(node, r.config.Manager.GetClusterNodePodSpec(node).Spec.Volumes, existing, r.config.Manager.GetClusterNodeVolumes(node), initVolume)
+func (r *ClusterNodeReconciler[T, U, PT, PU]) neededPersistentVolumes(node PU, existing []*corev1.PersistentVolume) (map[string]*corev1.PersistentVolume, []*corev1.PersistentVolume, map[string]types.NamespacedName, error) {
+	return neededPersistentVolumeObjects(node, r.config.Manager.GetClusterNodePodSpec(node).Spec.Volumes, existing, r.config.Manager.GetClusterNodeVolumes(node), r.initVolume)
 }
 
-func (r *ClusterNodeReconciler[T, U, PT, PU]) neededPersistentVolumeClaims(node PU, existing []*corev1.PersistentVolumeClaim) (map[string]*corev1.PersistentVolumeClaim, []*corev1.PersistentVolumeClaim, []types.NamespacedName, error) {
+func (r *ClusterNodeReconciler[T, U, PT, PU]) neededPersistentVolumeClaims(node PU, existing []*corev1.PersistentVolumeClaim) (map[string]*corev1.PersistentVolumeClaim, []*corev1.PersistentVolumeClaim, map[string]types.NamespacedName, error) {
 	return neededPersistentVolumeObjects(node, r.config.Manager.GetClusterNodePodSpec(node).Spec.Volumes, existing, r.config.Manager.GetClusterNodeVolumeClaims(node), initClaim)
 }
 
-func (r *ClusterNodeReconciler[T, U, PT, PU]) initPod(node PU, pod *corev1.Pod, claims map[string]*corev1.PersistentVolumeClaim) (string, error) {
+func (r *ClusterNodeReconciler[T, U, PT, PU]) initPod(node PU, pod *corev1.Pod, claims map[string]types.NamespacedName) (string, error) {
 	hash, err := r.config.Manager.HashClusterNode(node)
 	if err != nil {
 		return "", fmt.Errorf("hashing node: %w", err)
@@ -733,7 +743,7 @@ func (r *ClusterNodeReconciler[T, U, PT, PU]) initPod(node PU, pod *corev1.Pod, 
 		}
 
 		if pvc, found := claims[volume.PersistentVolumeClaim.ClaimName]; found {
-			volume.PersistentVolumeClaim.ClaimName = pvc.GetName()
+			volume.PersistentVolumeClaim.ClaimName = pvc.Name
 			volumes = append(volumes, volume)
 			continue
 		}
@@ -760,16 +770,15 @@ func initClaim(node client.Object, claim *corev1.PersistentVolumeClaim) error {
 	return nil
 }
 
-func initVolume(node client.Object, volume *corev1.PersistentVolume) error {
+func (r *ClusterNodeReconciler[T, U, PT, PU]) initVolume(node client.Object, volume *corev1.PersistentVolume) error {
 	originalName := volume.Name
 
 	volume.TypeMeta = metav1.TypeMeta{
 		Kind:       "PersistentVolume",
 		APIVersion: corev1.SchemeGroupVersion.String(),
 	}
-	volume.OwnerReferences = []metav1.OwnerReference{*metav1.NewControllerRef(node, node.GetObjectKind().GroupVersionKind())}
 	volume.Name = fmt.Sprintf("%s-%s", node.GetName(), originalName)
-	volume.Namespace = node.GetNamespace()
+	volume.Labels = map[string]string{r.config.NamespaceLabel: node.GetNamespace(), r.config.NodeLabel: node.GetName()}
 
 	return nil
 }

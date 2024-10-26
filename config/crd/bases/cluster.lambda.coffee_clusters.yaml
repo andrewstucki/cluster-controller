@@ -62,16 +62,12 @@ spec:
           metadata:
             type: object
           spec:
-            description: ClusterSpec defines the desired state of Cluster
             properties:
               minimumHealthyReplicas:
                 type: integer
               replicas:
-                default: 1
                 minimum: 1
                 type: integer
-            required:
-            - replicas
             type: object
           status:
             description: ClusterStatus defines the observed state of Cluster
