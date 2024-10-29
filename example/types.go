@@ -32,7 +32,7 @@ var (
 // +kubebuilder:object:generate=true
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:printcolumn:name="Cluster",type="string",JSONPath=`.metadata.labels['example-cluster-name']`
+// +kubebuilder:printcolumn:name="Cluster",type="string",JSONPath=`.metadata.labels['cluster-name']`
 // +kubebuilder:printcolumn:name="Phase",type="string",JSONPath=`.status.phase.name`
 // +kubebuilder:printcolumn:name="Message",type="string",priority=1,JSONPath=`.status.phase.message`
 // +kubebuilder:printcolumn:name="Running",type="boolean",JSONPath=`.status.running`

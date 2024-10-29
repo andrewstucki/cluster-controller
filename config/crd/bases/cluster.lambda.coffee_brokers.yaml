@@ -15,7 +15,7 @@ spec:
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .metadata.labels['example-cluster-name']
+    - jsonPath: .metadata.labels['cluster-name']
       name: Cluster
       type: string
     - jsonPath: .status.phase.name

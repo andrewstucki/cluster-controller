@@ -37,7 +37,13 @@ func getGroupVersionKind(scheme *runtime.Scheme, object client.Object) (*schema.
 	if len(kinds) == 0 {
 		return nil, fmt.Errorf("unable to determine object kind")
 	}
-	return &kinds[0], nil
+
+	gvk := kinds[0]
+	return &schema.GroupVersionKind{
+		Group:   gvk.Group,
+		Version: gvk.Version,
+		Kind:    gvk.Kind,
+	}, nil
 }
 
 func mapObjectsTo[T client.Object](list []client.Object) []T {
