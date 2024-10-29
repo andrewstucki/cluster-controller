@@ -43,7 +43,7 @@ func (c *ResourceClient[T, PT]) PatchOwnedResource(ctx context.Context, owner PT
 	return c.client.Patch(ctx, object, client.Apply, c.fieldOwner, client.ForceOwnership)
 }
 
-func (c *ResourceClient[T, PT]) ListOwnedResources(ctx context.Context, owner PT, object client.Object) ([]client.Object, error) {
+func (c *ResourceClient[T, PT]) ListResources(ctx context.Context, object client.Object, opts ...client.ListOption) ([]client.Object, error) {
 	kind, err := getGroupVersionKind(c.client.Scheme(), object)
 	if err != nil {
 		return nil, err
@@ -59,7 +59,7 @@ func (c *ResourceClient[T, PT]) ListOwnedResources(ctx context.Context, owner PT
 		return nil, fmt.Errorf("invalid object list type: %T", object)
 	}
 
-	if err := c.client.List(ctx, list, client.MatchingLabels(c.normalizer.labels(owner))); err != nil {
+	if err := c.client.List(ctx, list, opts...); err != nil {
 		return nil, fmt.Errorf("listing resources: %w", err)
 	}
 
@@ -74,4 +74,12 @@ func (c *ResourceClient[T, PT]) ListOwnedResources(ctx context.Context, owner PT
 	}
 
 	return sortCreation(converted), nil
+}
+
+func (c *ResourceClient[T, PT]) ListMatchingResources(ctx context.Context, object client.Object, labels map[string]string) ([]client.Object, error) {
+	return c.ListResources(ctx, object, client.MatchingLabels(labels))
+}
+
+func (c *ResourceClient[T, PT]) ListOwnedResources(ctx context.Context, owner PT, object client.Object) ([]client.Object, error) {
+	return c.ListMatchingResources(ctx, object, c.normalizer.labels(owner))
 }

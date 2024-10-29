@@ -3,7 +3,9 @@ package controller
 import (
 	"context"
 	"fmt"
+	"time"
 
+	"github.com/go-logr/logr"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -11,13 +13,14 @@ import (
 )
 
 const (
-	defaultFieldOwner     = "cluster-controller"
-	defaultHashLabel      = "cluster-hash"
-	defaultClusterLabel   = "cluster-name"
-	defaultOwnerTypeLabel = "cluster-owner-type"
-	defaultNodeLabel      = "cluster-node-name"
-	defaultNamespaceLabel = "cluster-namespace"
-	defaultFinalizer      = "cluster-finalizer"
+	defaultFieldOwner               = "cluster-controller"
+	defaultHashLabel                = "cluster-hash"
+	defaultClusterLabel             = "cluster-name"
+	defaultOwnerTypeLabel           = "cluster-owner-type"
+	defaultNodeLabel                = "cluster-node-name"
+	defaultNamespaceLabel           = "cluster-namespace"
+	defaultFinalizer                = "cluster-finalizer"
+	defaultGarbageCollectionTimeout = 5 * time.Minute
 )
 
 type ClusterLabels struct {
@@ -29,16 +32,18 @@ type ClusterLabels struct {
 }
 
 type Config[T, U any, PT ptrToObject[T], PU ptrToObject[U]] struct {
-	Scheme                 *runtime.Scheme
-	Client                 client.Client
-	Subscriber             LifecycleSubscriber[T, U, PT, PU]
-	Factory                ClusterFactory[T, U, PT, PU]
-	Labels                 ClusterLabels
-	ClusterResourceFactory ResourceFactory[T, PT]
-	NodeResourceFactory    ResourceFactory[U, PU]
-	FieldOwner             client.FieldOwner
-	Finalizer              string
-	Testing                bool
+	Logger                   logr.Logger
+	GarbageCollectionTimeout time.Duration
+	Scheme                   *runtime.Scheme
+	Client                   client.Client
+	Subscriber               LifecycleSubscriber[T, U, PT, PU]
+	Factory                  ClusterFactory[T, U, PT, PU]
+	Labels                   ClusterLabels
+	ClusterResourceFactory   ResourceFactory[T, PT]
+	NodeResourceFactory      ResourceFactory[U, PU]
+	FieldOwner               client.FieldOwner
+	Finalizer                string
+	Testing                  bool
 }
 
 func (c *Config[T, U, PT, PU]) clusterNormalizer() *Normalizer[T, PT] {
@@ -104,13 +109,15 @@ func (c *Config[T, U, PT, PU]) clusterResourceManager() *ResourceManager[T, PT] 
 		matchesType: func(m map[string]string) bool {
 			return m != nil && m[c.Labels.OwnerTypeLabel] == "cluster"
 		},
-		ownerFromLabels: func(m map[string]string) types.NamespacedName {
-			if m == nil {
-				return types.NamespacedName{}
-			}
-			return types.NamespacedName{Namespace: m[c.Labels.NamespaceLabel], Name: m[c.Labels.ClusterLabel]}
-		},
+		ownerFromLabels: c.clusterOwnerFromLabels,
 	}
+}
+
+func (c *Config[T, U, PT, PU]) clusterOwnerFromLabels(m map[string]string) types.NamespacedName {
+	if m == nil {
+		return types.NamespacedName{}
+	}
+	return types.NamespacedName{Namespace: m[c.Labels.NamespaceLabel], Name: m[c.Labels.ClusterLabel]}
 }
 
 func (c *Config[T, U, PT, PU]) nodeResourceManager() *ResourceManager[U, PU] {
@@ -120,13 +127,15 @@ func (c *Config[T, U, PT, PU]) nodeResourceManager() *ResourceManager[U, PU] {
 		matchesType: func(m map[string]string) bool {
 			return m != nil && m[c.Labels.OwnerTypeLabel] == "node"
 		},
-		ownerFromLabels: func(m map[string]string) types.NamespacedName {
-			if m == nil {
-				return types.NamespacedName{}
-			}
-			return types.NamespacedName{Namespace: m[c.Labels.NamespaceLabel], Name: m[c.Labels.NodeLabel]}
-		},
+		ownerFromLabels: c.nodeOwnerFromLabels,
 	}
+}
+
+func (c *Config[T, U, PT, PU]) nodeOwnerFromLabels(m map[string]string) types.NamespacedName {
+	if m == nil {
+		return types.NamespacedName{}
+	}
+	return types.NamespacedName{Namespace: m[c.Labels.NamespaceLabel], Name: m[c.Labels.NodeLabel]}
 }
 
 func (c *Config[T, U, PT, PU]) podManager() *PodManager[U, PU] {
@@ -142,6 +151,8 @@ func (c *Config[T, U, PT, PU]) podManager() *PodManager[U, PU] {
 type ConfigBuilder[T, U any, PT ptrToObject[T], PU ptrToObject[U]] struct {
 	runtimeManager ctrl.Manager
 	factory        ClusterFactory[T, U, PT, PU]
+
+	garbageCollectionTimeout time.Duration
 
 	subscriber             LifecycleSubscriber[T, U, PT, PU]
 	clusterResourceFactory ResourceFactory[T, PT]
@@ -161,19 +172,20 @@ type ConfigBuilder[T, U any, PT ptrToObject[T], PU ptrToObject[U]] struct {
 
 func New[T, U any, PT ptrToObject[T], PU ptrToObject[U]](runtimeManager ctrl.Manager, factory ClusterFactory[T, U, PT, PU]) *ConfigBuilder[T, U, PT, PU] {
 	return &ConfigBuilder[T, U, PT, PU]{
-		runtimeManager:         runtimeManager,
-		factory:                factory,
-		subscriber:             &UnimplementedLifecycleSubscriber[T, U, PT, PU]{},
-		clusterResourceFactory: &EmptyResourceFactory[T, PT]{},
-		nodeResourceFactory:    &EmptyResourceFactory[U, PU]{},
-		fieldOwner:             defaultFieldOwner,
-		finalizer:              defaultFinalizer,
-		hashLabel:              defaultHashLabel,
-		clusterLabel:           defaultClusterLabel,
-		nodeLabel:              defaultNodeLabel,
-		namespaceLabel:         defaultNamespaceLabel,
-		ownerTypeLabel:         defaultOwnerTypeLabel,
-		testing:                false,
+		runtimeManager:           runtimeManager,
+		factory:                  factory,
+		subscriber:               &UnimplementedLifecycleSubscriber[T, U, PT, PU]{},
+		clusterResourceFactory:   &EmptyResourceFactory[T, PT]{},
+		nodeResourceFactory:      &EmptyResourceFactory[U, PU]{},
+		garbageCollectionTimeout: defaultGarbageCollectionTimeout,
+		fieldOwner:               defaultFieldOwner,
+		finalizer:                defaultFinalizer,
+		hashLabel:                defaultHashLabel,
+		clusterLabel:             defaultClusterLabel,
+		nodeLabel:                defaultNodeLabel,
+		namespaceLabel:           defaultNamespaceLabel,
+		ownerTypeLabel:           defaultOwnerTypeLabel,
+		testing:                  false,
 	}
 }
 
@@ -227,22 +239,28 @@ func (c *ConfigBuilder[T, U, PT, PU]) WithNodeResourceFactory(factory ResourceFa
 	return c
 }
 
+func (c *ConfigBuilder[T, U, PT, PU]) WithGarbageCollectionTimeout(timeout time.Duration) *ConfigBuilder[T, U, PT, PU] {
+	c.garbageCollectionTimeout = timeout
+	return c
+}
+
 func (c *ConfigBuilder[T, U, PT, PU]) Testing() *ConfigBuilder[T, U, PT, PU] {
 	c.testing = true
 	return c
 }
 
 func (c *ConfigBuilder[T, U, PT, PU]) Setup(ctx context.Context) error {
-
 	config := &Config[T, U, PT, PU]{
-		Scheme:                 c.runtimeManager.GetScheme(),
-		Client:                 c.runtimeManager.GetClient(),
-		Factory:                c.factory,
-		Subscriber:             c.subscriber,
-		ClusterResourceFactory: c.clusterResourceFactory,
-		NodeResourceFactory:    c.nodeResourceFactory,
-		FieldOwner:             c.fieldOwner,
-		Finalizer:              c.finalizer,
+		Logger:                   c.runtimeManager.GetLogger(),
+		Scheme:                   c.runtimeManager.GetScheme(),
+		Client:                   c.runtimeManager.GetClient(),
+		GarbageCollectionTimeout: c.garbageCollectionTimeout,
+		Factory:                  c.factory,
+		Subscriber:               c.subscriber,
+		ClusterResourceFactory:   c.clusterResourceFactory,
+		NodeResourceFactory:      c.nodeResourceFactory,
+		FieldOwner:               c.fieldOwner,
+		Finalizer:                c.finalizer,
 		Labels: ClusterLabels{
 			HashLabel:      c.hashLabel,
 			ClusterLabel:   c.clusterLabel,
@@ -259,6 +277,10 @@ func (c *ConfigBuilder[T, U, PT, PU]) Setup(ctx context.Context) error {
 
 	if err := setupClusterNodeReconciler(c.runtimeManager, config); err != nil {
 		return fmt.Errorf("setting up cluster node reconciler: %w", err)
+	}
+
+	if err := c.runtimeManager.Add(NewGarbageCollector(config)); err != nil {
+		return fmt.Errorf("setting up garbage collector: %w", err)
 	}
 
 	return nil
