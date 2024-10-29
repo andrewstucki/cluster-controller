@@ -8,6 +8,7 @@ import (
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
 	"github.com/andrewstucki/cluster-controller/controller"
+	policyv1 "k8s.io/api/policy/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -73,6 +74,10 @@ func main() {
 		WithNodeResourceFactory(controller.NewDelegatingResourceFactory[Broker](
 			[]client.Object{&corev1.PersistentVolume{}},
 			[]client.Object{&corev1.PersistentVolumeClaim{}},
+		)).
+		WithClusterResourceFactory(controller.NewDelegatingResourceFactory[Cluster](
+			[]client.Object{},
+			[]client.Object{&policyv1.PodDisruptionBudget{}},
 		)).
 		Setup(ctx); err != nil {
 		setupLog.Error(err, "unable to setup controllers")

@@ -9,6 +9,7 @@ import (
 	clusterv1alpha1 "github.com/andrewstucki/cluster-controller/controller/api/v1alpha1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	k8sapierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/rand"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -60,6 +61,12 @@ func (r *ClusterReconciler[T, U, PT, PU]) Reconcile(ctx context.Context, req ctr
 		return ctrl.Result{}, err
 	}
 
+	selector, err := metav1.LabelSelectorAsSelector(&metav1.LabelSelector{MatchLabels: r.config.clusterRelatedLabels(cluster)})
+	if err != nil {
+		logger.Error(err, "constructing label selector")
+		return ctrl.Result{}, err
+	}
+
 	originalStatus := r.config.Factory.GetClusterStatus(cluster)
 	status := originalStatus.DeepCopy()
 	status.ObservedGeneration = cluster.GetGeneration()
@@ -68,6 +75,7 @@ func (r *ClusterReconciler[T, U, PT, PU]) Reconcile(ctx context.Context, req ctr
 	status.HealthyReplicas = 0
 	status.UpToDateReplicas = 0
 	status.OutOfDateReplicas = 0
+	status.Selector = selector.String()
 
 	syncStatus := func(err error) (ctrl.Result, error) {
 		if !apiequality.Semantic.DeepEqual(status, &originalStatus) {

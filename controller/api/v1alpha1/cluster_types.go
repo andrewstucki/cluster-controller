@@ -75,9 +75,9 @@ type ClusterStatus struct {
 	// +optional
 	RunningReplicas int `json:"runningReplicas,omitempty"`
 	// +optional
-	Phase *Phase `json:"phase,omitempty"`
+	Selector string `json:"selector,omitempty"`
 	// +optional
-	Conditions []metav1.Condition `json:"conditions,omitempty"`
+	Phase *Phase `json:"phase,omitempty"`
 }
 
 func (s *ClusterStatus) SetPhase(phase Phase) {

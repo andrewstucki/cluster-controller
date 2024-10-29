@@ -9,9 +9,11 @@ import (
 
 	clusterv1alpha1 "github.com/andrewstucki/cluster-controller/controller/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
+	policyv1 "k8s.io/api/policy/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/rand"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -152,6 +154,7 @@ type ClusterSpec struct {
 // +kubebuilder:object:generate=true
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:subresource:scale:specpath=.spec.replicas,statuspath=.status.replicas,selectorpath=.status.selector
 // +kubebuilder:printcolumn:name="Replicas",type="integer",JSONPath=`.status.replicas`
 // +kubebuilder:printcolumn:name="Running Nodes",type="integer",JSONPath=`.status.runningReplicas`
 // +kubebuilder:printcolumn:name="Healthy Nodes",type="integer",JSONPath=`.status.healthyReplicas`
@@ -193,6 +196,35 @@ func (c *Cluster) GetNode() *Broker {
 	return &Broker{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "broker",
+		},
+	}
+}
+
+func (c *Cluster) ClusterScopedSubresources() []client.Object {
+	return []client.Object{}
+}
+
+func (c *Cluster) NamespaceScopedSubresources() []client.Object {
+	minHealthy := c.Spec.MinimumHealthyReplicas
+	if minHealthy > c.Status.HealthyReplicas {
+		minHealthy = c.Status.HealthyReplicas
+	}
+
+	return []client.Object{
+		&policyv1.PodDisruptionBudget{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      c.Name,
+				Namespace: c.Namespace,
+			},
+			Spec: policyv1.PodDisruptionBudgetSpec{
+				MinAvailable: ptr.To(intstr.FromInt(minHealthy)),
+				Selector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{
+						"cluster-name":      c.Name,
+						"cluster-namespace": c.Namespace,
+					},
+				},
+			},
 		},
 	}
 }

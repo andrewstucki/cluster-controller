@@ -60,6 +60,13 @@ func (c *Config[T, U, PT, PU]) clusterNormalizer() *Normalizer[T, PT] {
 	}
 }
 
+func (c *Config[T, U, PT, PU]) clusterRelatedLabels(owner PT) map[string]string {
+	return map[string]string{
+		c.Labels.ClusterLabel:   owner.GetName(),
+		c.Labels.NamespaceLabel: owner.GetNamespace(),
+	}
+}
+
 func (c *Config[T, U, PT, PU]) nodeNormalizer() *Normalizer[U, PU] {
 	return &Normalizer[U, PU]{
 		labels: func(owner PU) map[string]string {
