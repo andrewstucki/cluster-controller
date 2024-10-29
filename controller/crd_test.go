@@ -2,7 +2,10 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"hash/fnv"
 	"time"
 
 	clusterv1alpha1 "github.com/andrewstucki/cluster-controller/controller/api/v1alpha1"
@@ -12,6 +15,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/rand"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -22,28 +26,41 @@ const (
 )
 
 var (
-	testGroupVersion       = schema.GroupVersion{Group: testGroup, Version: testVersion}
-	defaultTestPodTemplate = &corev1.PodTemplateSpec{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "pod",
-		},
-		Spec: corev1.PodSpec{
-			Containers: []corev1.Container{{
-				Name:  "container",
-				Image: "bhargavshah86/kube-test:v0.1",
-			}},
-			RestartPolicy: corev1.RestartPolicyNever,
-		},
-	}
-
-	defaultTestVolumeClaims = []*corev1.PersistentVolumeClaim{}
-	defaultTestVolumes      = []*corev1.PersistentVolume{}
+	testGroupVersion = schema.GroupVersion{Group: testGroup, Version: testVersion}
 )
 
 type InternalTestCluster struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 	Status            clusterv1alpha1.ClusterStatus `json:"status,omitempty"`
+}
+
+func (c *InternalTestCluster) GetHash() (string, error) {
+	return "static", nil
+}
+
+func (c *InternalTestCluster) GetStatus() clusterv1alpha1.ClusterStatus {
+	return c.Status
+}
+
+func (c *InternalTestCluster) SetStatus(status clusterv1alpha1.ClusterStatus) {
+	c.Status = status
+}
+
+func (c *InternalTestCluster) GetReplicas() int {
+	return 3
+}
+
+func (c *InternalTestCluster) GetMinimumHealthyReplicas() int {
+	return 0
+}
+
+func (c *InternalTestCluster) GetNode() *InternalTestClusterNode {
+	return &InternalTestClusterNode{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "node",
+		},
+	}
 }
 
 type InternalTestClusterList struct {
@@ -56,6 +73,45 @@ type InternalTestClusterNode struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 	Status            clusterv1alpha1.ClusterNodeStatus `json:"status,omitempty"`
+}
+
+func (b *InternalTestClusterNode) GetStatus() clusterv1alpha1.ClusterNodeStatus {
+	return b.Status
+}
+
+func (b *InternalTestClusterNode) SetStatus(status clusterv1alpha1.ClusterNodeStatus) {
+	b.Status = status
+}
+
+func (b *InternalTestClusterNode) GetPod() *corev1.Pod {
+	return &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: b.GetNamespace(),
+			Name:      b.GetName(),
+		},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{{
+				Name:  "container",
+				Image: "bhargavshah86/kube-test:v0.1",
+			}},
+			RestartPolicy: corev1.RestartPolicyNever,
+		},
+	}
+}
+
+func (b *InternalTestClusterNode) GetHash() (string, error) {
+	hf := fnv.New32()
+
+	specData, err := json.Marshal(b.GetPod())
+	if err != nil {
+		return "", fmt.Errorf("marshaling pod: %w", err)
+	}
+	_, err = hf.Write(specData)
+	if err != nil {
+		return "", fmt.Errorf("hashing pod: %w", err)
+	}
+
+	return rand.SafeEncodeString(fmt.Sprint(hf.Sum32())), nil
 }
 
 type InternalTestClusterNodeList struct {
@@ -281,29 +337,4 @@ func registerCRDs(s *runtime.Scheme) {
 	s.AddKnownTypes(testGroupVersion, &InternalTestCluster{}, &InternalTestClusterList{})
 	s.AddKnownTypes(testGroupVersion, &InternalTestClusterNode{}, &InternalTestClusterNodeList{})
 	metav1.AddToGroupVersion(s, testGroupVersion)
-}
-
-func clusterNodeCustomizer(fns ...func(node *TestClusterNode[InternalTestClusterNode, *InternalTestClusterNode])) func(node *TestClusterNode[InternalTestClusterNode, *InternalTestClusterNode]) {
-	return func(node *TestClusterNode[InternalTestClusterNode, *InternalTestClusterNode]) {
-		node.SetHashClusterNodeResponse("static", nil)
-		node.SetClusterNodePodSpec(defaultTestPodTemplate)
-		node.SetClusterNodeVolumeClaims(defaultTestVolumeClaims)
-		node.SetClusterNodeVolumes(defaultTestVolumes)
-
-		for _, fn := range fns {
-			fn(node)
-		}
-	}
-}
-
-func clusterCustomizer(replicas, minReplicas int, fns ...func(cluster *TestCluster[InternalTestClusterNode, *InternalTestClusterNode])) func(cluster *TestCluster[InternalTestClusterNode, *InternalTestClusterNode]) {
-	return func(cluster *TestCluster[InternalTestClusterNode, *InternalTestClusterNode]) {
-		cluster.SetReplicas(replicas)
-		cluster.SetMinimumHealthyReplicas(minReplicas)
-		cluster.SetHashClusterResponse("static", nil)
-
-		for _, fn := range fns {
-			fn(cluster)
-		}
-	}
 }

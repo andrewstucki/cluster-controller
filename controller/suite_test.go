@@ -11,7 +11,6 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	clusterv1alpha1 "github.com/andrewstucki/cluster-controller/controller/api/v1alpha1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
@@ -25,23 +24,10 @@ import (
 var (
 	cfg         *rest.Config
 	k8sClient   client.Client
+	factory     *TestClusterFactory[InternalTestCluster, InternalTestClusterNode, *InternalTestCluster, *InternalTestClusterNode]
 	testEnv     *envtest.Environment
 	suiteCtx    context.Context
 	suiteCancel context.CancelFunc
-
-	testManager = NewTestManager[InternalTestCluster, InternalTestClusterNode]().
-			WithClusterStatusGet(func(cluster *InternalTestCluster) clusterv1alpha1.ClusterStatus {
-			return cluster.Status
-		}).
-		WithClusterStatusUpdate(func(cluster *InternalTestCluster, status clusterv1alpha1.ClusterStatus) {
-			cluster.Status = status
-		}).
-		WithClusterNodeStatusGet(func(node *InternalTestClusterNode) clusterv1alpha1.ClusterNodeStatus {
-			return node.Status
-		}).
-		WithClusterNodeStatusUpdate(func(node *InternalTestClusterNode, status clusterv1alpha1.ClusterNodeStatus) {
-			node.Status = status
-		})
 )
 
 func TestControllers(t *testing.T) {
@@ -82,7 +68,8 @@ var _ = BeforeSuite(func() {
 	})
 	Expect(err).ToNot(HaveOccurred())
 
-	err = New(k8sManager, testManager).Testing().Setup(suiteCtx)
+	factory = NewTestClusterFactory[InternalTestCluster, InternalTestClusterNode](k8sClient)
+	err = New(k8sManager, factory).Testing().Setup(suiteCtx)
 	Expect(err).ToNot(HaveOccurred())
 
 	go func() {
@@ -112,9 +99,7 @@ var _ = Describe("Cluster controller", func() {
 			},
 		}
 
-		factory := NewTestClusterFactory(k8sClient, testManager, clusterNodeCustomizer(), clusterCustomizer(3, 0))
-
-		err := factory.CreateCluster(ctx, cluster, &InternalTestClusterNode{})
+		err := factory.Client.Create(ctx, cluster)
 		Expect(err).NotTo(HaveOccurred())
 
 		nodes, err := factory.WaitForStableNodes(ctx, 10*time.Second, cluster)
@@ -122,7 +107,7 @@ var _ = Describe("Cluster controller", func() {
 
 		Expect(nodes).To(HaveLen(3))
 
-		factory.DeleteNode(ctx, nodes[0])
+		factory.Client.Delete(ctx, nodes[0])
 
 		nodes, err = factory.WaitForStableNodes(ctx, 10*time.Second, cluster)
 		Expect(err).NotTo(HaveOccurred())

@@ -154,7 +154,7 @@ func (r *ClusterReconciler[T, U, PT, PU]) Reconcile(ctx context.Context, req ctr
 		if !r.nodeManager.VersionMatches(hash, node) {
 			status.OutOfDateReplicas++
 		}
-		if isNodeUpdated(nodeStatus, node, hash, r.nodeManager.VersionMatches(hash, node)) {
+		if isNodeUpdated(nodeStatus, hash, r.nodeManager.VersionMatches(hash, node)) {
 			status.UpToDateReplicas++
 		}
 		if isNodeRunning(nodeStatus) {
@@ -196,7 +196,7 @@ func (r *ClusterReconciler[T, U, PT, PU]) Reconcile(ctx context.Context, req ctr
 	for _, node := range nodes {
 		nodeStatus := ptr.To(r.config.Factory.GetClusterNodeStatus(node))
 
-		if isNodeUpdating(nodeStatus, node, hash, r.nodeManager.VersionMatches(hash, node)) {
+		if isNodeUpdating(nodeStatus, hash, r.nodeManager.VersionMatches(hash, node)) {
 			// we have a pending update, just wait
 			return syncStatus(nil)
 		}
@@ -286,11 +286,11 @@ func (r *ClusterReconciler[T, U, PT, PU]) updateNode(ctx context.Context, status
 	return nil
 }
 
-func isNodeUpdating(status *clusterv1alpha1.ClusterNodeStatus, node client.Object, hash string, matchesVersion bool) bool {
+func isNodeUpdating(status *clusterv1alpha1.ClusterNodeStatus, hash string, matchesVersion bool) bool {
 	return matchesVersion && (status.ClusterVersion != hash || !status.MatchesCluster)
 }
 
-func isNodeUpdated(status *clusterv1alpha1.ClusterNodeStatus, node client.Object, hash string, matchesVersion bool) bool {
+func isNodeUpdated(status *clusterv1alpha1.ClusterNodeStatus, hash string, matchesVersion bool) bool {
 	return matchesVersion && status.ClusterVersion == hash && status.MatchesCluster
 }
 

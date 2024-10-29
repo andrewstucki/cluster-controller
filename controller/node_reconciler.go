@@ -24,17 +24,17 @@ type ClusterNodeReconciler[T, U any, PT ptrToObject[T], PU ptrToObject[U]] struc
 	subscriber      LifecycleSubscriber[T, U, PT, PU]
 }
 
-func setupClusterNodeReconciler[T, U any, PT ptrToObject[T], PU ptrToObject[U]](ctx context.Context, mgr ctrl.Manager, config *Config[T, U, PT, PU]) error {
+func setupClusterNodeReconciler[T, U any, PT ptrToObject[T], PU ptrToObject[U]](mgr ctrl.Manager, config *Config[T, U, PT, PU]) error {
 	return (&ClusterNodeReconciler[T, U, PT, PU]{
 		config:          config,
 		podManager:      config.podManager(),
 		nodeManager:     config.clusterNodeManager(),
 		resourceManager: config.nodeResourceManager(),
 		subscriber:      config.Subscriber,
-	}).setupWithManager(ctx, mgr)
+	}).setupWithManager(mgr)
 }
 
-func (r *ClusterNodeReconciler[T, U, PT, PU]) setupWithManager(ctx context.Context, mgr ctrl.Manager) error {
+func (r *ClusterNodeReconciler[T, U, PT, PU]) setupWithManager(mgr ctrl.Manager) error {
 	builder := ctrl.NewControllerManagedBy(mgr).For(newKubeObject[U, PU]())
 
 	return r.resourceManager.WatchResources(builder).Owns(&corev1.Pod{}).Complete(r)
@@ -174,7 +174,7 @@ func (r *ClusterNodeReconciler[T, U, PT, PU]) Reconcile(ctx context.Context, req
 	}
 
 	if len(pods) > 1 {
-		if err := r.decommissionPod(ctx, status, cluster, node, pods[0]); err != nil {
+		if err := r.decommissionPod(ctx, status, node, pods[0]); err != nil {
 			logger.Error(err, "decommissioning pod")
 			return syncStatus(err)
 		}
@@ -186,7 +186,7 @@ func (r *ClusterNodeReconciler[T, U, PT, PU]) Reconcile(ctx context.Context, req
 	pod := pods[0]
 
 	if !r.podManager.VersionMatches(status.CurrentVersion, pod) {
-		if err := r.decommissionPod(ctx, status, cluster, node, pod); err != nil {
+		if err := r.decommissionPod(ctx, status, node, pod); err != nil {
 			logger.Error(err, "decommissioning pod with non-current version")
 			return syncStatus(err)
 		}
@@ -195,7 +195,7 @@ func (r *ClusterNodeReconciler[T, U, PT, PU]) Reconcile(ctx context.Context, req
 
 	// if we detect a pod as finished, attempt to restart it
 	if r.podManager.IsFailed(pod) || r.podManager.IsSucceeded(pod) {
-		if err := r.restartPod(ctx, status, cluster, node, pod); err != nil {
+		if err := r.restartPod(ctx, status, node, pod); err != nil {
 			logger.Error(err, "restarting stopped pod")
 			return syncStatus(err)
 		}
@@ -223,7 +223,7 @@ func (r *ClusterNodeReconciler[T, U, PT, PU]) createPod(ctx context.Context, sta
 	return pod, nil
 }
 
-func (r *ClusterNodeReconciler[T, U, PT, PU]) decommissionPod(ctx context.Context, status *clusterv1alpha1.ClusterNodeStatus, cluster PT, node PU, pod *corev1.Pod) error {
+func (r *ClusterNodeReconciler[T, U, PT, PU]) decommissionPod(ctx context.Context, status *clusterv1alpha1.ClusterNodeStatus, node PU, pod *corev1.Pod) error {
 	if r.podManager.IsTerminating(pod) {
 		return nil
 	}
@@ -236,7 +236,7 @@ func (r *ClusterNodeReconciler[T, U, PT, PU]) decommissionPod(ctx context.Contex
 	return nil
 }
 
-func (r *ClusterNodeReconciler[T, U, PT, PU]) restartPod(ctx context.Context, status *clusterv1alpha1.ClusterNodeStatus, cluster PT, node PU, pod *corev1.Pod) error {
+func (r *ClusterNodeReconciler[T, U, PT, PU]) restartPod(ctx context.Context, status *clusterv1alpha1.ClusterNodeStatus, node PU, pod *corev1.Pod) error {
 	if r.podManager.IsTerminating(pod) {
 		return nil
 	}

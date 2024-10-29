@@ -257,7 +257,7 @@ func (c *ConfigBuilder[T, U, PT, PU]) Setup(ctx context.Context) error {
 		return fmt.Errorf("setting up cluster reconciler: %w", err)
 	}
 
-	if err := setupClusterNodeReconciler(ctx, c.runtimeManager, config); err != nil {
+	if err := setupClusterNodeReconciler(c.runtimeManager, config); err != nil {
 		return fmt.Errorf("setting up cluster node reconciler: %w", err)
 	}
 
