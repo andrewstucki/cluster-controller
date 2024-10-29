@@ -4,13 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"reflect"
 	"slices"
 
 	clusterv1alpha1 "github.com/andrewstucki/cluster-controller/controller/api/v1alpha1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	k8sapierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/rand"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -21,33 +19,25 @@ import (
 
 type ClusterReconciler[T, U any, PT ptrToObject[T], PU ptrToObject[U]] struct {
 	config *Config[T, U, PT, PU]
+
+	nodeManager     *NodeManager[T, U, PT, PU]
+	resourceManager *ResourceManager[T, PT]
+	subscriber      LifecycleSubscriber[T, U, PT, PU]
 }
 
-func SetupClusterReconciler[T, U any, PT ptrToObject[T], PU ptrToObject[U]](mgr ctrl.Manager, config *Config[T, U, PT, PU]) error {
+func setupClusterReconciler[T, U any, PT ptrToObject[T], PU ptrToObject[U]](mgr ctrl.Manager, config *Config[T, U, PT, PU]) error {
 	return (&ClusterReconciler[T, U, PT, PU]{
-		config: config,
+		config:          config,
+		nodeManager:     config.clusterNodeManager(),
+		resourceManager: config.clusterResourceManager(),
+		subscriber:      config.Subscriber,
 	}).setupWithManager(mgr)
 }
 
 func (r *ClusterReconciler[T, U, PT, PU]) setupWithManager(mgr ctrl.Manager) error {
-	return watchResources(
-		ctrl.NewControllerManagedBy(mgr).For(newKubeObject[T, PT]()),
-		r.config.Manager, ResourceKindCluster, r.config.NamespaceLabel, r.config.ClusterLabel, r.ownerTypeLabels(),
-	).Owns(newKubeObject[U, PU]()).Complete(r)
-}
+	builder := ctrl.NewControllerManagedBy(mgr).For(newKubeObject[T, PT]())
 
-func (r *ClusterReconciler[T, U, PT, PU]) matchingLabels(cluster PT) map[string]string {
-	return map[string]string{
-		r.config.ClusterLabel:   cluster.GetName(),
-		r.config.NamespaceLabel: cluster.GetNamespace(),
-		r.config.OwnerTypeLabel: "cluster",
-	}
-}
-
-func (r *ClusterReconciler[T, U, PT, PU]) ownerTypeLabels() map[string]string {
-	return map[string]string{
-		r.config.OwnerTypeLabel: "cluster",
-	}
+	return r.resourceManager.WatchResources(builder).Owns(newKubeObject[U, PU]()).Complete(r)
 }
 
 func (r *ClusterReconciler[T, U, PT, PU]) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -58,19 +48,19 @@ func (r *ClusterReconciler[T, U, PT, PU]) Reconcile(ctx context.Context, req ctr
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	nodes, err := r.getClusterNodes(ctx, cluster.GetNamespace(), cluster.GetName())
+	nodes, err := r.nodeManager.ListNodes(ctx, cluster)
 	if err != nil {
 		logger.Error(err, "fetching cluster nodes")
 		return ctrl.Result{}, err
 	}
 
-	hash, err := r.config.Manager.HashCluster(cluster)
+	hash, err := r.nodeManager.Hash(cluster)
 	if err != nil {
-		logger.Error(err, "calculating cluster node hash")
+		logger.Error(err, "calculating cluster hash")
 		return ctrl.Result{}, err
 	}
 
-	originalStatus := r.config.Manager.GetClusterStatus(cluster)
+	originalStatus := r.config.Factory.GetClusterStatus(cluster)
 	status := originalStatus.DeepCopy()
 	status.ObservedGeneration = cluster.GetGeneration()
 	status.Replicas = 0
@@ -81,7 +71,7 @@ func (r *ClusterReconciler[T, U, PT, PU]) Reconcile(ctx context.Context, req ctr
 
 	syncStatus := func(err error) (ctrl.Result, error) {
 		if !apiequality.Semantic.DeepEqual(status, &originalStatus) {
-			r.config.Manager.SetClusterStatus(cluster, *status)
+			r.config.Factory.SetClusterStatus(cluster, *status)
 			syncErr := r.config.Client.Status().Update(ctx, cluster)
 			err = errors.Join(syncErr, err)
 		}
@@ -91,10 +81,8 @@ func (r *ClusterReconciler[T, U, PT, PU]) Reconcile(ctx context.Context, req ctr
 
 	// we are being deleted, clean up everything
 	if cluster.GetDeletionTimestamp() != nil {
-		modifying := &ClusterObjects[T, U, PT, PU]{Cluster: cluster}
-
 		if !isTerminatingPhase(status) {
-			if err := runSubscriberCallback(ctx, r.config.Manager, modifying, beforeDeleteCallback); err != nil {
+			if err := r.subscriber.BeforeClusterDeleted(ctx, cluster); err != nil {
 				logger.Error(err, "before cluster termination")
 				return syncStatus(err)
 			}
@@ -102,7 +90,7 @@ func (r *ClusterReconciler[T, U, PT, PU]) Reconcile(ctx context.Context, req ctr
 		}
 
 		// clean up all my resources
-		if deleted, err := deleteAllResources(ctx, r.config.Client, r.config.Manager, ResourceKindCluster, r.matchingLabels(cluster)); deleted || err != nil {
+		if deleted, err := r.resourceManager.DeleteAll(ctx, cluster); deleted || err != nil {
 			return syncStatus(err)
 		}
 
@@ -124,7 +112,7 @@ func (r *ClusterReconciler[T, U, PT, PU]) Reconcile(ctx context.Context, req ctr
 				return ignoreConflict(err)
 			}
 
-			if err := runSubscriberCallback(ctx, r.config.Manager, modifying, afterDeleteCallback); err != nil {
+			if err := r.subscriber.AfterClusterDeleted(ctx, cluster); err != nil {
 				logger.Error(err, "after cluster termination (non-retryable)")
 			}
 		}
@@ -148,7 +136,7 @@ func (r *ClusterReconciler[T, U, PT, PU]) Reconcile(ctx context.Context, req ctr
 	}
 
 	// sync all my resources
-	if err := syncAllResources(ctx, r.config.Client, r.config.Manager, ResourceKindCluster, r.config.FieldOwner, cluster, r.matchingLabels(cluster)); err != nil {
+	if err := r.resourceManager.SyncAll(ctx, cluster); err != nil {
 		return syncStatus(err)
 	}
 
@@ -161,12 +149,12 @@ func (r *ClusterReconciler[T, U, PT, PU]) Reconcile(ctx context.Context, req ctr
 
 	unhealthyNodes := []PU{}
 	for _, node := range nodes {
-		nodeStatus := ptr.To(r.config.Manager.GetClusterNodeStatus(node))
+		nodeStatus := ptr.To(r.config.Factory.GetClusterNodeStatus(node))
 
-		if isNodeStale(node, r.config.HashLabel, hash) {
+		if !r.nodeManager.VersionMatches(hash, node) {
 			status.OutOfDateReplicas++
 		}
-		if isNodeUpdated(nodeStatus, node, r.config.HashLabel, hash) {
+		if isNodeUpdated(nodeStatus, node, hash, r.nodeManager.VersionMatches(hash, node)) {
 			status.UpToDateReplicas++
 		}
 		if isNodeRunning(nodeStatus) {
@@ -179,7 +167,7 @@ func (r *ClusterReconciler[T, U, PT, PU]) Reconcile(ctx context.Context, req ctr
 		status.Replicas++
 	}
 
-	desiredReplicas := r.config.Manager.GetClusterReplicas(cluster)
+	desiredReplicas := r.config.Factory.GetClusterReplicas(cluster)
 	if len(nodes) > desiredReplicas {
 		// we need to decommission the replicas, start with the newest one
 		node := nodes[len(nodes)-1]
@@ -206,9 +194,9 @@ func (r *ClusterReconciler[T, U, PT, PU]) Reconcile(ctx context.Context, req ctr
 
 	// first check if we have a pending update
 	for _, node := range nodes {
-		nodeStatus := ptr.To(r.config.Manager.GetClusterNodeStatus(node))
+		nodeStatus := ptr.To(r.config.Factory.GetClusterNodeStatus(node))
 
-		if isNodeUpdating(nodeStatus, node, r.config.HashLabel, hash) {
+		if isNodeUpdating(nodeStatus, node, hash, r.nodeManager.VersionMatches(hash, node)) {
 			// we have a pending update, just wait
 			return syncStatus(nil)
 		}
@@ -217,9 +205,9 @@ func (r *ClusterReconciler[T, U, PT, PU]) Reconcile(ctx context.Context, req ctr
 	// we don't so roll out any needed change
 
 	for _, node := range nodes {
-		if getHash(r.config.HashLabel, node) != hash {
+		if !r.nodeManager.VersionMatches(hash, node) {
 			// if we don't meet the minimum healthy threshold, then don't do anything
-			minimumReplicas := r.config.Manager.GetClusterMinimumHealthyReplicas(cluster)
+			minimumReplicas := r.config.Factory.GetClusterMinimumHealthyReplicas(cluster)
 			if minimumReplicas > 0 && len(nodes)-len(unhealthyNodes)-1 > minimumReplicas {
 				// don't do a rollout because we are below the minimum threshold
 				setPhase(cluster, status, gatedPhase("upgrade is gated on minimum replicas"))
@@ -251,15 +239,13 @@ func (r *ClusterReconciler[T, U, PT, PU]) Reconcile(ctx context.Context, req ctr
 }
 
 func (r *ClusterReconciler[T, U, PT, PU]) decommissionNode(ctx context.Context, status *clusterv1alpha1.ClusterStatus, cluster PT, node PU) error {
-	// don't attempt to delete anything if it's being deleted already
 	if node.GetDeletionTimestamp() != nil {
 		return nil
 	}
 
 	setPhase(cluster, status, decommissioningPhase(fmt.Sprintf("decommissioning node: \"%s/%s\"", node.GetNamespace(), node.GetName())))
 
-	modifying := &ClusterObjects[T, U, PT, PU]{Cluster: cluster, Node: node}
-	if err := runNodeSubscriberCallback(ctx, r.config.Manager, modifying, beforeDecommissionCallback); err != nil {
+	if err := r.subscriber.BeforeNodeDecommissioned(ctx, cluster, node); err != nil {
 		return fmt.Errorf("running node before delete hook: %w", err)
 	}
 
@@ -273,147 +259,39 @@ func (r *ClusterReconciler[T, U, PT, PU]) decommissionNode(ctx context.Context, 
 		return node.GetName() == name
 	})
 
-	if err := runNodeSubscriberCallback(ctx, r.config.Manager, modifying, afterDecommissionCallback); err != nil {
-		return fmt.Errorf("running node after delete hook: %w", err)
-	}
-
 	return nil
 }
 
 func (r *ClusterReconciler[T, U, PT, PU]) createNode(ctx context.Context, status *clusterv1alpha1.ClusterStatus, cluster PT, hash string) error {
-	node := r.config.Manager.GetClusterNode(cluster)
-	r.initNode(r.config.ClusterLabel, r.config.HashLabel, status, cluster, node, hash)
+	node, err := r.nodeManager.CreateNode(ctx, status, cluster, hash)
 
 	setPhase(cluster, status, initializingPhase(fmt.Sprintf("creating node \"%s/%s\"", node.GetNamespace(), node.GetName())))
 
-	modifying := &ClusterObjects[T, U, PT, PU]{Cluster: cluster, Node: node}
-	if err := runNodeSubscriberCallback(ctx, r.config.Manager, modifying, beforeCreateCallback); err != nil {
-		return fmt.Errorf("running node before create hook: %w", err)
-	}
-
-	if err := r.config.Client.Create(ctx, node); err != nil {
-		if k8sapierrors.IsAlreadyExists(err) {
-			return nil
-		}
+	if err != nil {
 		return fmt.Errorf("creating node: %w", err)
 	}
 
 	status.Nodes = append(status.Nodes, node.GetName())
 
-	if err := runNodeSubscriberCallback(ctx, r.config.Manager, modifying, afterCreateCallback); err != nil {
-		return fmt.Errorf("running node after create hook: %w", err)
-	}
-
 	return nil
 }
 
 func (r *ClusterReconciler[T, U, PT, PU]) updateNode(ctx context.Context, status *clusterv1alpha1.ClusterStatus, cluster PT, node PU, hash string) error {
-	updated := r.config.Manager.GetClusterNode(cluster)
-	r.initNode(r.config.ClusterLabel, r.config.HashLabel, status, cluster, updated, hash)
-	updated.SetName(node.GetName())
-
-	// set the spec from the updated node if the node has a Spec field
-	specValue := reflect.ValueOf(node).Elem().FieldByName("Spec")
-	if specValue.IsValid() && specValue.CanSet() {
-		specValue.Set(reflect.ValueOf(updated).Elem().FieldByName("Spec"))
-	}
-
-	labels := node.GetLabels()
-	labels[r.config.HashLabel] = hash
-	node.SetLabels(labels)
-
 	setPhase(cluster, status, updatingPhase(fmt.Sprintf("updating node \"%s/%s\"", node.GetNamespace(), node.GetName())))
 
-	modifying := &ClusterObjects[T, U, PT, PU]{Cluster: cluster, Node: node}
-	if err := runNodeSubscriberCallback(ctx, r.config.Manager, modifying, beforeUpdateCallback); err != nil {
-		return fmt.Errorf("running node before update hook: %w", err)
-	}
-
-	if err := r.config.Client.Update(ctx, node); err != nil {
+	if err := r.nodeManager.UpdateNode(ctx, cluster, hash, node); err != nil {
 		return fmt.Errorf("updating node: %w", err)
-	}
-
-	if err := runNodeSubscriberCallback(ctx, r.config.Manager, modifying, afterUpdateCallback); err != nil {
-		return fmt.Errorf("running node after update hook: %w", err)
 	}
 
 	return nil
 }
 
-func (r *ClusterReconciler[T, U, PT, PU]) initNode(clusterLabel, hashLabel string, status *clusterv1alpha1.ClusterStatus, cluster PT, node PU, hash string) {
-	node.SetName(generateNextNode(cluster.GetName(), status))
-	node.SetNamespace(cluster.GetNamespace())
-
-	kinds, _, _ := r.config.Scheme.ObjectKinds(node)
-	kind := kinds[0]
-
-	node.GetObjectKind().SetGroupVersionKind(kind)
-	node.SetOwnerReferences([]metav1.OwnerReference{*metav1.NewControllerRef(cluster, cluster.GetObjectKind().GroupVersionKind())})
-
-	labels := node.GetLabels()
-	if labels == nil {
-		labels = map[string]string{}
-	}
-
-	labels[hashLabel] = hash
-	labels[clusterLabel] = cluster.GetName()
-	node.SetLabels(labels)
+func isNodeUpdating(status *clusterv1alpha1.ClusterNodeStatus, node client.Object, hash string, matchesVersion bool) bool {
+	return matchesVersion && (status.ClusterVersion != hash || !status.MatchesCluster)
 }
 
-func (r *ClusterReconciler[T, U, PT, PU]) getClusterNodes(ctx context.Context, namespace, clusterName string) ([]PU, error) {
-	kinds, _, err := r.config.Scheme.ObjectKinds(newKubeObject[U, PU]())
-	if err != nil {
-		return nil, fmt.Errorf("fetching object kind: %w", err)
-	}
-	if len(kinds) == 0 {
-		return nil, fmt.Errorf("unable to determine object kind")
-	}
-	kind := kinds[0]
-	kind.Kind += "List"
-
-	o, err := r.config.Scheme.New(kind)
-	if err != nil {
-		return nil, fmt.Errorf("initializing list: %w", err)
-	}
-	list, ok := o.(client.ObjectList)
-	if !ok {
-		return nil, fmt.Errorf("invalid object list type: %T", o)
-	}
-
-	if err := r.config.Client.List(ctx, list, client.InNamespace(namespace), client.MatchingLabels{
-		r.config.ClusterLabel: clusterName,
-	}); err != nil {
-		return nil, fmt.Errorf("listing cluster nodes: %w", err)
-	}
-
-	converted := []PU{}
-
-	items := reflect.ValueOf(list).Elem().FieldByName("Items")
-	if items.IsZero() {
-		return nil, fmt.Errorf("unable to get cluster node items")
-	}
-	for i := 0; i < items.Len(); i++ {
-		item := items.Index(i).Interface()
-		node, ok := item.(U)
-		if !ok {
-			return nil, fmt.Errorf("unable to convert cluster node item of type %T", item)
-		}
-		converted = append(converted, ptr.To(node))
-	}
-
-	return sortCreation(converted), nil
-}
-
-func isNodeUpdating(status *clusterv1alpha1.ClusterNodeStatus, node client.Object, hashLabel, hash string) bool {
-	return getHash(hashLabel, node) == hash && (status.ClusterVersion != hash || !status.MatchesCluster)
-}
-
-func isNodeUpdated(status *clusterv1alpha1.ClusterNodeStatus, node client.Object, hashLabel, hash string) bool {
-	return getHash(hashLabel, node) == hash && status.ClusterVersion == hash && status.MatchesCluster
-}
-
-func isNodeStale(node client.Object, hashLabel, hash string) bool {
-	return getHash(hashLabel, node) != hash
+func isNodeUpdated(status *clusterv1alpha1.ClusterNodeStatus, node client.Object, hash string, matchesVersion bool) bool {
+	return matchesVersion && status.ClusterVersion == hash && status.MatchesCluster
 }
 
 func isNodeHealthy(status *clusterv1alpha1.ClusterNodeStatus) bool {

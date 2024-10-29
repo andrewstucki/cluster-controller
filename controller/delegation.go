@@ -6,6 +6,43 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
+type SubresourceObject[T any] interface {
+	client.Object
+
+	ClusterScopedSubresources() []client.Object
+	NamespaceScopedSubresources() []client.Object
+
+	*T
+}
+
+type DelegatingResourceFactory[T any, PT SubresourceObject[T]] struct {
+	clusterScopedResourceTypes   []client.Object
+	namespaceScopedResourceTypes []client.Object
+}
+
+func NewDelegatingResourceFactory[T any, PT SubresourceObject[T]](clusterResources, namespaceResources []client.Object) *DelegatingResourceFactory[T, PT] {
+	return &DelegatingResourceFactory[T, PT]{
+		clusterScopedResourceTypes:   clusterResources,
+		namespaceScopedResourceTypes: namespaceResources,
+	}
+}
+
+func (d *DelegatingResourceFactory[T, PT]) ClusterScopedResourceTypes() []client.Object {
+	return d.clusterScopedResourceTypes
+}
+
+func (d *DelegatingResourceFactory[T, PT]) NamespaceScopedResourceTypes() []client.Object {
+	return d.namespaceScopedResourceTypes
+}
+
+func (d *DelegatingResourceFactory[T, PT]) ClusterScopedResources(owner PT) []client.Object {
+	return owner.ClusterScopedSubresources()
+}
+
+func (d *DelegatingResourceFactory[T, PT]) NamespaceScopedResources(owner PT) []client.Object {
+	return owner.NamespaceScopedSubresources()
+}
+
 type ClusterObject[T, U any, PU ClusterNodeObject[U]] interface {
 	client.Object
 	GetHash() (string, error)
@@ -13,7 +50,7 @@ type ClusterObject[T, U any, PU ClusterNodeObject[U]] interface {
 	SetStatus(status clusterv1alpha1.ClusterStatus)
 	GetReplicas() int
 	GetMinimumHealthyReplicas() int
-	GetNodeTemplate() PU
+	GetNode() PU
 
 	*T
 }
@@ -23,61 +60,53 @@ type ClusterNodeObject[U any] interface {
 	GetHash() (string, error)
 	GetStatus() clusterv1alpha1.ClusterNodeStatus
 	SetStatus(status clusterv1alpha1.ClusterNodeStatus)
-	GetPodSpec() *corev1.PodTemplateSpec
-	GetVolumes() []*corev1.PersistentVolume
-	GetVolumeClaims() []*corev1.PersistentVolumeClaim
+	GetPod() *corev1.Pod
 
 	*U
 }
 
-type DelegatingClusterManager[T, U any, PT ClusterObject[T, U, PU], PU ClusterNodeObject[U]] struct {
-	UnimplementedCallbacks[T, U, PT, PU]
+type DelegatingClusterFactory[T, U any, PT ClusterObject[T, U, PU], PU ClusterNodeObject[U]] struct{}
+
+func NewDelegatingClusterFactory[T, U any, PT ClusterObject[T, U, PU], PU ClusterNodeObject[U]]() ClusterFactory[T, U, PT, PU] {
+	return &DelegatingClusterFactory[T, U, PT, PU]{}
 }
 
-func (m *DelegatingClusterManager[T, U, PT, PU]) HashCluster(cluster PT) (string, error) {
+func (m *DelegatingClusterFactory[T, U, PT, PU]) HashCluster(cluster PT) (string, error) {
 	return cluster.GetHash()
 }
 
-func (m *DelegatingClusterManager[T, U, PT, PU]) GetClusterStatus(cluster PT) clusterv1alpha1.ClusterStatus {
+func (m *DelegatingClusterFactory[T, U, PT, PU]) GetClusterStatus(cluster PT) clusterv1alpha1.ClusterStatus {
 	return cluster.GetStatus()
 }
 
-func (m *DelegatingClusterManager[T, U, PT, PU]) SetClusterStatus(cluster PT, status clusterv1alpha1.ClusterStatus) {
+func (m *DelegatingClusterFactory[T, U, PT, PU]) SetClusterStatus(cluster PT, status clusterv1alpha1.ClusterStatus) {
 	cluster.SetStatus(status)
 }
 
-func (m *DelegatingClusterManager[T, U, PT, PU]) GetClusterReplicas(cluster PT) int {
+func (m *DelegatingClusterFactory[T, U, PT, PU]) GetClusterReplicas(cluster PT) int {
 	return cluster.GetReplicas()
 }
 
-func (m *DelegatingClusterManager[T, U, PT, PU]) GetClusterMinimumHealthyReplicas(cluster PT) int {
+func (m *DelegatingClusterFactory[T, U, PT, PU]) GetClusterMinimumHealthyReplicas(cluster PT) int {
 	return cluster.GetMinimumHealthyReplicas()
 }
 
-func (m *DelegatingClusterManager[T, U, PT, PU]) GetClusterNodeTemplate(cluster PT) PU {
-	return cluster.GetNodeTemplate()
+func (m *DelegatingClusterFactory[T, U, PT, PU]) GetClusterNode(cluster PT) PU {
+	return cluster.GetNode()
 }
 
-func (m *DelegatingClusterManager[T, U, PT, PU]) HashClusterNode(node PU) (string, error) {
+func (m *DelegatingClusterFactory[T, U, PT, PU]) HashClusterNode(node PU) (string, error) {
 	return node.GetHash()
 }
 
-func (m *DelegatingClusterManager[T, U, PT, PU]) GetClusterNodeStatus(node PU) clusterv1alpha1.ClusterNodeStatus {
+func (m *DelegatingClusterFactory[T, U, PT, PU]) GetClusterNodeStatus(node PU) clusterv1alpha1.ClusterNodeStatus {
 	return node.GetStatus()
 }
 
-func (m *DelegatingClusterManager[T, U, PT, PU]) SetClusterNodeStatus(node PU, status clusterv1alpha1.ClusterNodeStatus) {
+func (m *DelegatingClusterFactory[T, U, PT, PU]) SetClusterNodeStatus(node PU, status clusterv1alpha1.ClusterNodeStatus) {
 	node.SetStatus(status)
 }
 
-func (m *DelegatingClusterManager[T, U, PT, PU]) GetClusterNodePodSpec(node PU) *corev1.PodTemplateSpec {
-	return node.GetPodSpec()
-}
-
-func (m *DelegatingClusterManager[T, U, PT, PU]) GetClusterNodeVolumes(node PU) []*corev1.PersistentVolume {
-	return node.GetVolumes()
-}
-
-func (m *DelegatingClusterManager[T, U, PT, PU]) GetClusterNodeVolumeClaims(node PU) []*corev1.PersistentVolumeClaim {
-	return node.GetVolumeClaims()
+func (m *DelegatingClusterFactory[T, U, PT, PU]) GetClusterNodePod(node PU) *corev1.Pod {
+	return node.GetPod()
 }

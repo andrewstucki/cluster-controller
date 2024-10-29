@@ -3,9 +3,18 @@
 package main
 
 import (
+	"encoding/json"
+	"fmt"
+	"hash/fnv"
+
 	clusterv1alpha1 "github.com/andrewstucki/cluster-controller/controller/api/v1alpha1"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/rand"
+	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	runtimescheme "sigs.k8s.io/controller-runtime/pkg/scheme"
 )
 
@@ -35,6 +44,102 @@ type Broker struct {
 	Status clusterv1alpha1.ClusterNodeStatus `json:"status,omitempty"`
 }
 
+func (b *Broker) GetStatus() clusterv1alpha1.ClusterNodeStatus {
+	return b.Status
+}
+
+func (b *Broker) SetStatus(status clusterv1alpha1.ClusterNodeStatus) {
+	b.Status = status
+}
+
+func (b *Broker) GetPod() *corev1.Pod {
+	return &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: b.GetNamespace(),
+			Name:      b.GetName(),
+		},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{{
+				Name:  "container",
+				Image: "bhargavshah86/kube-test:v0.1",
+			}},
+			RestartPolicy: corev1.RestartPolicyNever,
+			Volumes: []corev1.Volume{{
+				Name: "tmp",
+				VolumeSource: corev1.VolumeSource{
+					PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+						ClaimName: b.GetName() + "-volume",
+						ReadOnly:  true,
+					},
+				},
+			}},
+		},
+	}
+}
+
+func (b *Broker) GetHash() (string, error) {
+	hf := fnv.New32()
+
+	specData, err := json.Marshal(b.GetPod())
+	if err != nil {
+		return "", fmt.Errorf("marshaling pod: %w", err)
+	}
+	_, err = hf.Write(specData)
+	if err != nil {
+		return "", fmt.Errorf("hashing pod: %w", err)
+	}
+
+	return rand.SafeEncodeString(fmt.Sprint(hf.Sum32())), nil
+}
+
+func (b *Broker) ClusterScopedSubresources() []client.Object {
+	return []client.Object{
+		&corev1.PersistentVolume{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: b.GetNamespace() + "-" + b.GetName() + "-volume",
+			},
+			Spec: corev1.PersistentVolumeSpec{
+				StorageClassName:              "manual",
+				PersistentVolumeReclaimPolicy: corev1.PersistentVolumeReclaimDelete,
+				Capacity: corev1.ResourceList{
+					corev1.ResourceStorage: resource.MustParse("1Mi"),
+				},
+				AccessModes: []corev1.PersistentVolumeAccessMode{
+					corev1.ReadWriteOnce,
+				},
+				PersistentVolumeSource: corev1.PersistentVolumeSource{
+					HostPath: &corev1.HostPathVolumeSource{
+						Path: "/tmp/foo",
+					},
+				},
+			},
+		},
+	}
+}
+
+func (b *Broker) NamespaceScopedSubresources() []client.Object {
+	return []client.Object{
+		&corev1.PersistentVolumeClaim{
+			ObjectMeta: metav1.ObjectMeta{
+				Namespace: b.GetNamespace(),
+				Name:      b.GetName() + "-volume",
+			},
+			Spec: corev1.PersistentVolumeClaimSpec{
+				VolumeName:       b.GetNamespace() + "-" + b.GetName() + "-volume",
+				StorageClassName: ptr.To("manual"),
+				AccessModes: []corev1.PersistentVolumeAccessMode{
+					corev1.ReadWriteOnce,
+				},
+				Resources: corev1.VolumeResourceRequirements{
+					Requests: corev1.ResourceList{
+						corev1.ResourceStorage: resource.MustParse("1Mi"),
+					},
+				},
+			},
+		},
+	}
+}
+
 type ClusterSpec struct {
 	// +required
 	// +kubebuilder:validation:Required
@@ -62,6 +167,34 @@ type Cluster struct {
 	// +optional
 	Spec   ClusterSpec                   `json:"spec,omitempty"`
 	Status clusterv1alpha1.ClusterStatus `json:"status,omitempty"`
+}
+
+func (c *Cluster) GetHash() (string, error) {
+	return "static", nil
+}
+
+func (c *Cluster) GetStatus() clusterv1alpha1.ClusterStatus {
+	return c.Status
+}
+
+func (c *Cluster) SetStatus(status clusterv1alpha1.ClusterStatus) {
+	c.Status = status
+}
+
+func (c *Cluster) GetReplicas() int {
+	return c.Spec.Replicas
+}
+
+func (c *Cluster) GetMinimumHealthyReplicas() int {
+	return c.Spec.MinimumHealthyReplicas
+}
+
+func (c *Cluster) GetNode() *Broker {
+	return &Broker{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "broker",
+		},
+	}
 }
 
 // +kubebuilder:object:generate=true

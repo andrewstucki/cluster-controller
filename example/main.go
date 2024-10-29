@@ -4,6 +4,7 @@ import (
 	"flag"
 	"os"
 
+	corev1 "k8s.io/api/core/v1"
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
 	"github.com/andrewstucki/cluster-controller/controller"
@@ -11,6 +12,7 @@ import (
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 )
@@ -65,12 +67,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	// manager := controller.DebugClusterManager(mgr.GetLogger(), &Manager{logger: mgr.GetLogger()})
-	manager := &Manager{logger: mgr.GetLogger()}
-	if err := controller.New(mgr, manager).
-		WithFieldOwner("example-owner").
-		WithHashLabel("example-cluster-hash").
-		WithClusterLabel("example-cluster-name").
+	factory := controller.NewDelegatingClusterFactory[Cluster, Broker]()
+	if err := controller.New(mgr, factory).
+		WithSubscriber(&Subscriber{logger: mgr.GetLogger()}).
+		WithNodeResourceFactory(controller.NewDelegatingResourceFactory[Broker](
+			[]client.Object{&corev1.PersistentVolume{}},
+			[]client.Object{&corev1.PersistentVolumeClaim{}},
+		)).
 		Setup(ctx); err != nil {
 		setupLog.Error(err, "unable to setup controllers")
 		os.Exit(1)
