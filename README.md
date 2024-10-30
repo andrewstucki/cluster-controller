@@ -40,3 +40,40 @@ Finally, lifecycle management of individual cluster nodes is handled via
 implementing a `controller.LifecycleSubscriber` if you only want to handle a
 subset of lifecycle events, embed `controller.UnimplementedLifecycleSubscriber`
 into your implementing structure.
+
+### Pooled Example
+
+```go
+// ... initialize subscriber
+controller.NewDelegatingPooledClusterFactory[Cluster, Pool, Node]()
+controller.Pooled(mgr, factory).
+    WithSubscriber(subscriber).
+    WithPoolIndices(controller.NewIndex(poolClusterIndex, indexPoolCluster)).
+    WithPoolResourceFactory(controller.NewDelegatingResourceFactory[Pool](
+        []client.Object{},
+        []client.Object{&policyv1.PodDisruptionBudget{}},
+    )).
+    WithNodeResourceFactory(controller.NewDelegatingResourceFactory[Node](
+        []client.Object{&corev1.PersistentVolume{}},
+        []client.Object{&corev1.PersistentVolumeClaim{}},
+    )).
+    Setup(ctx)
+```
+
+### Non-Pooled Example
+
+```go
+// ... initialize subscriber
+controller.NewDelegatingClusterFactory[Cluster, Node]()
+controller.New(mgr, factory).
+    WithSubscriber(subscriber).
+    WithClusterResourceFactory(controller.NewDelegatingResourceFactory[Cluster](
+        []client.Object{},
+        []client.Object{&policyv1.PodDisruptionBudget{}},
+    )).
+    WithNodeResourceFactory(controller.NewDelegatingResourceFactory[Node](
+        []client.Object{&corev1.PersistentVolume{}},
+        []client.Object{&corev1.PersistentVolumeClaim{}},
+    )).
+    Setup(ctx)
+```
