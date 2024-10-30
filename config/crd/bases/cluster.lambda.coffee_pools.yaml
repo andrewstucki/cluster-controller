@@ -4,14 +4,14 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.15.0
-  name: clusters.cluster.lambda.coffee
+  name: pools.cluster.lambda.coffee
 spec:
   group: cluster.lambda.coffee
   names:
-    kind: Cluster
-    listKind: ClusterList
-    plural: clusters
-    singular: cluster
+    kind: Pool
+    listKind: PoolList
+    plural: pools
+    singular: pool
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
@@ -24,13 +24,6 @@ spec:
     - jsonPath: .status.healthyReplicas
       name: Healthy Nodes
       type: integer
-    - jsonPath: .status.phase.name
-      name: Phase
-      type: string
-    - jsonPath: .status.phase.message
-      name: Message
-      priority: 1
-      type: string
     - jsonPath: .status.upToDateReplicas
       name: Up-to-date Nodes
       priority: 1
@@ -42,7 +35,7 @@ spec:
     name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: Cluster is the Schema for the Clusters API
+        description: Pool is the Schema for the Pools API
         properties:
           apiVersion:
             description: |-
@@ -63,51 +56,29 @@ spec:
             type: object
           spec:
             properties:
-              minimumHealthyReplicas:
+              cluster:
+                type: string
+              minimumReplicas:
                 type: integer
+              replicas:
+                minimum: 1
+                type: integer
+            required:
+            - cluster
             type: object
           status:
-            description: ClusterStatus defines the observed state of Cluster
+            description: ClusterPoolStatus defines the observed state of Pool
             properties:
-              defunctReplicas:
-                type: integer
               healthyReplicas:
-                type: integer
-              nextNode:
-                type: string
-              nodes:
-                items:
-                  type: string
-                type: array
-              observedGeneration:
-                format: int64
                 type: integer
               outOfDateReplicas:
                 type: integer
-              phase:
-                properties:
-                  lastTransitionTime:
-                    format: date-time
-                    type: string
-                  message:
-                    maxLength: 32768
-                    type: string
-                  name:
-                    maxLength: 32768
-                    type: string
-                  observedGeneration:
-                    format: int64
-                    minimum: 0
-                    type: integer
-                required:
-                - lastTransitionTime
-                - message
-                - name
-                type: object
               replicas:
                 type: integer
               runningReplicas:
                 type: integer
+              selector:
+                type: string
               upToDateReplicas:
                 type: integer
             type: object
@@ -115,4 +86,8 @@ spec:
     served: true
     storage: true
     subresources:
+      scale:
+        labelSelectorPath: .status.selector
+        specReplicasPath: .spec.replicas
+        statusReplicasPath: .status.replicas
       status: {}

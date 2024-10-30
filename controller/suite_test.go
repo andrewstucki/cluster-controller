@@ -102,14 +102,14 @@ var _ = Describe("Cluster controller", func() {
 		err := factory.Client.Create(ctx, cluster)
 		Expect(err).NotTo(HaveOccurred())
 
-		nodes, err := factory.WaitForStableNodes(ctx, 10*time.Second, cluster)
+		nodes, err := factory.WaitForStableNodes(ctx, 3, 10*time.Second, cluster)
 		Expect(err).NotTo(HaveOccurred())
 
 		Expect(nodes).To(HaveLen(3))
 
 		factory.Client.Delete(ctx, nodes[0])
 
-		nodes, err = factory.WaitForStableNodes(ctx, 10*time.Second, cluster)
+		nodes, err = factory.WaitForStableNodes(ctx, 3, 10*time.Second, cluster)
 		Expect(err).NotTo(HaveOccurred())
 
 		// make sure the node gets recreated

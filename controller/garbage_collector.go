@@ -15,32 +15,36 @@ import (
 // This is mainly due to the fact that you can't set owner refs for a cluster-scoped
 // resource to a namespace-scoped resource. As a result, we can't be certain that all of
 // our resources were actually cleaned up when a node/cluster was deleted.
-type GarbageCollector[T, U any, PT ptrToObject[T], PU ptrToObject[U]] struct {
+type GarbageCollector[T, U, V any, PT ptrToObject[T], PU ptrToObject[U], PV ptrToObject[V]] struct {
 	logger  logr.Logger
 	timeout time.Duration
 
 	ownerTypeLabel         string
 	clusterOwnerFromLabels func(map[string]string) types.NamespacedName
+	poolOwnerFromLabels    func(map[string]string) types.NamespacedName
 	nodeOwnerFromLabels    func(map[string]string) types.NamespacedName
 	clusterResources       []client.Object
+	poolResources          []client.Object
 	nodeResources          []client.Object
 	resourceClient         *ResourceClient[T, PT]
 }
 
-func NewGarbageCollector[T, U any, PT ptrToObject[T], PU ptrToObject[U]](config *Config[T, U, PT, PU]) *GarbageCollector[T, U, PT, PU] {
-	return &GarbageCollector[T, U, PT, PU]{
+func NewGarbageCollector[T, U, V any, PT ptrToObject[T], PU ptrToObject[U], PV ptrToObject[V]](config *Config[T, U, V, PT, PU, PV]) *GarbageCollector[T, U, V, PT, PU, PV] {
+	return &GarbageCollector[T, U, V, PT, PU, PV]{
 		timeout:                config.GarbageCollectionTimeout,
 		logger:                 config.Logger,
 		ownerTypeLabel:         config.Labels.OwnerTypeLabel,
 		clusterOwnerFromLabels: config.clusterOwnerFromLabels,
+		poolOwnerFromLabels:    config.poolOwnerFromLabels,
 		nodeOwnerFromLabels:    config.nodeOwnerFromLabels,
 		resourceClient:         config.clusterResourceClient(),
 		clusterResources:       config.ClusterResourceFactory.ClusterScopedResourceTypes(),
+		poolResources:          config.PoolResourceFactory.ClusterScopedResourceTypes(),
 		nodeResources:          config.NodeResourceFactory.ClusterScopedResourceTypes(),
 	}
 }
 
-func (g *GarbageCollector[T, U, PT, PU]) Start(ctx context.Context) error {
+func (g *GarbageCollector[T, U, V, PT, PU, PV]) Start(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
@@ -58,11 +62,11 @@ func (g *GarbageCollector[T, U, PT, PU]) Start(ctx context.Context) error {
 	}
 }
 
-func (g *GarbageCollector[T, U, PT, PU]) NeedLeaderElection() bool {
+func (g *GarbageCollector[T, U, V, PT, PU, PV]) NeedLeaderElection() bool {
 	return true
 }
 
-func (g *GarbageCollector[T, U, PT, PU]) runOnce(ctx context.Context) error {
+func (g *GarbageCollector[T, U, V, PT, PU, PV]) runOnce(ctx context.Context) error {
 	started := time.Now()
 
 	g.logger.V(4).Info("running garbage collection routine")
@@ -75,16 +79,25 @@ func (g *GarbageCollector[T, U, PT, PU]) runOnce(ctx context.Context) error {
 		return err
 	}
 
-	existingNodes, err := g.resourceClient.ListResources(ctx, newKubeObject[U, PU]())
+	existingPools, err := g.resourceClient.ListResources(ctx, newKubeObject[U, PU]())
+	if err != nil {
+		return err
+	}
+
+	existingNodes, err := g.resourceClient.ListResources(ctx, newKubeObject[V, PV]())
 	if err != nil {
 		return err
 	}
 
 	referencedClusters := map[types.NamespacedName]struct{}{}
+	referencedPools := map[types.NamespacedName]struct{}{}
 	referencedNodes := map[types.NamespacedName]struct{}{}
 
 	for _, cluster := range existingClusters {
 		referencedClusters[client.ObjectKeyFromObject(cluster)] = struct{}{}
+	}
+	for _, pool := range existingPools {
+		referencedPools[client.ObjectKeyFromObject(pool)] = struct{}{}
 	}
 	for _, node := range existingNodes {
 		referencedNodes[client.ObjectKeyFromObject(node)] = struct{}{}
@@ -109,6 +122,27 @@ func (g *GarbageCollector[T, U, PT, PU]) runOnce(ctx context.Context) error {
 
 			if _, found := referencedClusters[owner]; !found {
 				g.logger.V(4).Info("owner cluster not found, deleting resource", "owner", owner, "resourceType", fmt.Sprintf("%T", resourceType), "resource", objectID)
+				itemsToDelete = append(itemsToDelete, object)
+			}
+		}
+	}
+
+	for _, resourceType := range g.poolResources {
+		objects, err := g.resourceClient.ListMatchingResources(ctx, resourceType, map[string]string{g.ownerTypeLabel: "pool"})
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		for _, object := range objects {
+			objectID := client.ObjectKeyFromObject(object)
+			owner := g.poolOwnerFromLabels(object.GetLabels())
+
+			if owner.Namespace != "" && owner.Name != "" {
+				g.logger.V(4).Info("found pool owned resource", "owner", owner, "resourceType", fmt.Sprintf("%T", resourceType), "resource", objectID)
+			}
+
+			if _, found := referencedPools[owner]; !found {
+				g.logger.V(4).Info("owner pool not found, deleting resource", "owner", owner, "resourceType", fmt.Sprintf("%T", resourceType), "resource", objectID)
 				itemsToDelete = append(itemsToDelete, object)
 			}
 		}

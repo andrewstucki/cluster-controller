@@ -71,11 +71,11 @@ type ClusterStatus struct {
 	// +optional
 	UpToDateReplicas int `json:"upToDateReplicas,omitempty"`
 	// +optional
+	DefunctReplicas int `json:"defunctReplicas,omitempty"`
+	// +optional
 	HealthyReplicas int `json:"healthyReplicas,omitempty"`
 	// +optional
 	RunningReplicas int `json:"runningReplicas,omitempty"`
-	// +optional
-	Selector string `json:"selector,omitempty"`
 	// +optional
 	Phase *Phase `json:"phase,omitempty"`
 }
@@ -89,4 +89,20 @@ func (s *ClusterStatus) GetPhase() Phase {
 		return Phase{}
 	}
 	return *s.Phase
+}
+
+// ClusterPoolStatus defines the observed state of Pool
+type ClusterPoolStatus struct {
+	// +optional
+	Replicas int `json:"replicas,omitempty"`
+	// +optional
+	OutOfDateReplicas int `json:"outOfDateReplicas,omitempty"`
+	// +optional
+	UpToDateReplicas int `json:"upToDateReplicas,omitempty"`
+	// +optional
+	HealthyReplicas int `json:"healthyReplicas,omitempty"`
+	// +optional
+	RunningReplicas int `json:"runningReplicas,omitempty"`
+	// +optional
+	Selector string `json:"selector,omitempty"`
 }

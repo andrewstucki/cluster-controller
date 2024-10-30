@@ -69,6 +69,33 @@ type InternalTestClusterList struct {
 	Items           []InternalTestCluster `json:"items"`
 }
 
+type InternalTestPool struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+}
+
+func (c *InternalTestPool) GetHash() (string, error) {
+	return "static", nil
+}
+
+func (c *InternalTestPool) GetReplicas() int {
+	return 3
+}
+
+func (c *InternalTestPool) GetNode() *InternalTestClusterNode {
+	return &InternalTestClusterNode{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: c.Name + "-node",
+		},
+	}
+}
+
+type InternalTestPoolList struct {
+	metav1.TypeMeta `json:",inline"`
+	metav1.ListMeta `json:"metadata,omitempty"`
+	Items           []InternalTestPool `json:"items"`
+}
+
 type InternalTestClusterNode struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
@@ -143,6 +170,28 @@ func (in *InternalTestCluster) DeepCopyObject() runtime.Object {
 	return nil
 }
 
+func (in *InternalTestPool) DeepCopyInto(out *InternalTestPool) {
+	*out = *in
+	out.TypeMeta = in.TypeMeta
+	in.ObjectMeta.DeepCopyInto(&out.ObjectMeta)
+}
+
+func (in *InternalTestPool) DeepCopy() *InternalTestPool {
+	if in == nil {
+		return nil
+	}
+	out := new(InternalTestPool)
+	in.DeepCopyInto(out)
+	return out
+}
+
+func (in *InternalTestPool) DeepCopyObject() runtime.Object {
+	if c := in.DeepCopy(); c != nil {
+		return c
+	}
+	return nil
+}
+
 func (in *InternalTestClusterNode) DeepCopyInto(out *InternalTestClusterNode) {
 	*out = *in
 	out.TypeMeta = in.TypeMeta
@@ -189,6 +238,35 @@ func (in *InternalTestClusterList) DeepCopy() *InternalTestClusterList {
 }
 
 func (in *InternalTestClusterList) DeepCopyObject() runtime.Object {
+	if c := in.DeepCopy(); c != nil {
+		return c
+	}
+	return nil
+}
+
+func (in *InternalTestPoolList) DeepCopyInto(out *InternalTestPoolList) {
+	*out = *in
+	out.TypeMeta = in.TypeMeta
+	in.ListMeta.DeepCopyInto(&out.ListMeta)
+	if in.Items != nil {
+		in, out := &in.Items, &out.Items
+		*out = make([]InternalTestPool, len(*in))
+		for i := range *in {
+			(*in)[i].DeepCopyInto(&(*out)[i])
+		}
+	}
+}
+
+func (in *InternalTestPoolList) DeepCopy() *InternalTestPoolList {
+	if in == nil {
+		return nil
+	}
+	out := new(InternalTestPoolList)
+	in.DeepCopyInto(out)
+	return out
+}
+
+func (in *InternalTestPoolList) DeepCopyObject() runtime.Object {
 	if c := in.DeepCopy(); c != nil {
 		return c
 	}

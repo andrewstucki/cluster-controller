@@ -27,6 +27,7 @@ func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 
 	SchemeBuilder.Register(&Cluster{}, &ClusterList{})
+	SchemeBuilder.Register(&Pool{}, &PoolList{})
 	SchemeBuilder.Register(&Broker{}, &BrokerList{})
 	utilruntime.Must(AddToScheme(scheme))
 }
@@ -68,14 +69,15 @@ func main() {
 		os.Exit(1)
 	}
 
-	factory := controller.NewDelegatingClusterFactory[Cluster, Broker]()
-	if err := controller.New(mgr, factory).
+	factory := controller.NewDelegatingPooledClusterFactory[Cluster, Pool, Broker]()
+	if err := controller.Pooled[Cluster, Pool](mgr, factory).
 		WithSubscriber(&Subscriber{logger: mgr.GetLogger()}).
+		WithPoolIndices(controller.NewIndex(poolClusterIndex, indexPoolCluster)).
 		WithNodeResourceFactory(controller.NewDelegatingResourceFactory[Broker](
 			[]client.Object{&corev1.PersistentVolume{}},
 			[]client.Object{&corev1.PersistentVolumeClaim{}},
 		)).
-		WithClusterResourceFactory(controller.NewDelegatingResourceFactory[Cluster](
+		WithPoolResourceFactory(controller.NewDelegatingResourceFactory[Pool](
 			[]client.Object{},
 			[]client.Object{&policyv1.PodDisruptionBudget{}},
 		)).

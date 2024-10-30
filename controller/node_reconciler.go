@@ -15,17 +15,17 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
-type ClusterNodeReconciler[T, U any, PT ptrToObject[T], PU ptrToObject[U]] struct {
-	config *Config[T, U, PT, PU]
+type ClusterNodeReconciler[T, U, V any, PT ptrToObject[T], PU ptrToObject[U], PV ptrToObject[V]] struct {
+	config *Config[T, U, V, PT, PU, PV]
 
-	podManager      *PodManager[U, PU]
-	nodeManager     *NodeManager[T, U, PT, PU]
-	resourceManager *ResourceManager[U, PU]
-	subscriber      LifecycleSubscriber[T, U, PT, PU]
+	podManager      *PodManager[V, PV]
+	nodeManager     *NodeManager[T, U, V, PT, PU, PV]
+	resourceManager *ResourceManager[V, PV]
+	subscriber      LifecycleSubscriber[T, V, PT, PV]
 }
 
-func setupClusterNodeReconciler[T, U any, PT ptrToObject[T], PU ptrToObject[U]](mgr ctrl.Manager, config *Config[T, U, PT, PU]) error {
-	return (&ClusterNodeReconciler[T, U, PT, PU]{
+func setupClusterNodeReconciler[T, U, V any, PT ptrToObject[T], PU ptrToObject[U], PV ptrToObject[V]](mgr ctrl.Manager, config *Config[T, U, V, PT, PU, PV]) error {
+	return (&ClusterNodeReconciler[T, U, V, PT, PU, PV]{
 		config:          config,
 		podManager:      config.podManager(),
 		nodeManager:     config.clusterNodeManager(),
@@ -34,18 +34,18 @@ func setupClusterNodeReconciler[T, U any, PT ptrToObject[T], PU ptrToObject[U]](
 	}).setupWithManager(mgr)
 }
 
-func (r *ClusterNodeReconciler[T, U, PT, PU]) setupWithManager(mgr ctrl.Manager) error {
-	builder := ctrl.NewControllerManagedBy(mgr).For(newKubeObject[U, PU]())
+func (r *ClusterNodeReconciler[T, U, V, PT, PU, PV]) setupWithManager(mgr ctrl.Manager) error {
+	builder := ctrl.NewControllerManagedBy(mgr).For(newKubeObject[V, PV]())
 
 	return r.resourceManager.WatchResources(builder).Owns(&corev1.Pod{}).Complete(r)
 }
 
-func (r *ClusterNodeReconciler[T, U, PT, PU]) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+func (r *ClusterNodeReconciler[T, U, V, PT, PU, PV]) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	deploymentFirstStabilized := false
 
 	logger := log.FromContext(ctx)
 
-	node := newKubeObject[U, PU]()
+	node := newKubeObject[V, PV]()
 	if err := r.config.Client.Get(ctx, req.NamespacedName, node); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
@@ -209,7 +209,7 @@ func (r *ClusterNodeReconciler[T, U, PT, PU]) Reconcile(ctx context.Context, req
 	return syncStatus(nil)
 }
 
-func (r *ClusterNodeReconciler[T, U, PT, PU]) createPod(ctx context.Context, status *clusterv1alpha1.ClusterNodeStatus, node PU) (*corev1.Pod, error) {
+func (r *ClusterNodeReconciler[T, U, V, PT, PU, PV]) createPod(ctx context.Context, status *clusterv1alpha1.ClusterNodeStatus, node PV) (*corev1.Pod, error) {
 	setPhase(node, status, initializingPhase("initializing pod"))
 
 	version, pod, err := r.podManager.CreatePod(ctx, node)
@@ -223,7 +223,7 @@ func (r *ClusterNodeReconciler[T, U, PT, PU]) createPod(ctx context.Context, sta
 	return pod, nil
 }
 
-func (r *ClusterNodeReconciler[T, U, PT, PU]) decommissionPod(ctx context.Context, status *clusterv1alpha1.ClusterNodeStatus, node PU, pod *corev1.Pod) error {
+func (r *ClusterNodeReconciler[T, U, V, PT, PU, PV]) decommissionPod(ctx context.Context, status *clusterv1alpha1.ClusterNodeStatus, node PV, pod *corev1.Pod) error {
 	if r.podManager.IsTerminating(pod) {
 		return nil
 	}
@@ -236,7 +236,7 @@ func (r *ClusterNodeReconciler[T, U, PT, PU]) decommissionPod(ctx context.Contex
 	return nil
 }
 
-func (r *ClusterNodeReconciler[T, U, PT, PU]) restartPod(ctx context.Context, status *clusterv1alpha1.ClusterNodeStatus, node PU, pod *corev1.Pod) error {
+func (r *ClusterNodeReconciler[T, U, V, PT, PU, PV]) restartPod(ctx context.Context, status *clusterv1alpha1.ClusterNodeStatus, node PV, pod *corev1.Pod) error {
 	if r.podManager.IsTerminating(pod) {
 		return nil
 	}
@@ -249,7 +249,7 @@ func (r *ClusterNodeReconciler[T, U, PT, PU]) restartPod(ctx context.Context, st
 	return nil
 }
 
-func (r *ClusterNodeReconciler[T, U, PT, PU]) getCluster(ctx context.Context, node PU) (PT, error) {
+func (r *ClusterNodeReconciler[T, U, V, PT, PU, PV]) getCluster(ctx context.Context, node PV) (PT, error) {
 	cluster := newKubeObject[T, PT]()
 
 	labels := node.GetLabels()

@@ -3,6 +3,7 @@ package controller
 import (
 	clusterv1alpha1 "github.com/andrewstucki/cluster-controller/controller/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -45,12 +46,34 @@ func (d *DelegatingResourceFactory[T, PT]) NamespaceScopedResources(owner PT) []
 
 type ClusterObject[T, U any, PU ClusterNodeObject[U]] interface {
 	client.Object
-	GetHash() (string, error)
 	GetStatus() clusterv1alpha1.ClusterStatus
 	SetStatus(status clusterv1alpha1.ClusterStatus)
 	GetReplicas() int
 	GetMinimumHealthyReplicas() int
+	GetHash() (string, error)
 	GetNode() PU
+
+	*T
+}
+
+type PooledClusterObject[T any] interface {
+	client.Object
+	GetStatus() clusterv1alpha1.ClusterStatus
+	SetStatus(status clusterv1alpha1.ClusterStatus)
+	GetMinimumHealthyReplicas() int
+	GetPoolsOptions() []client.ListOption
+
+	*T
+}
+
+type ClusterPoolObject[T, U any, PU ClusterNodeObject[U]] interface {
+	client.Object
+	GetHash() (string, error)
+	GetStatus() clusterv1alpha1.ClusterPoolStatus
+	SetStatus(status clusterv1alpha1.ClusterPoolStatus)
+	GetReplicas() int
+	GetNode() PU
+	GetCluster() types.NamespacedName
 
 	*T
 }
@@ -65,48 +88,110 @@ type ClusterNodeObject[U any] interface {
 	*U
 }
 
-type DelegatingClusterFactory[T, U any, PT ClusterObject[T, U, PU], PU ClusterNodeObject[U]] struct{}
+type DelegatingClusterFactory[T, V any, PT ClusterObject[T, V, PV], PV ClusterNodeObject[V]] struct{}
 
-func NewDelegatingClusterFactory[T, U any, PT ClusterObject[T, U, PU], PU ClusterNodeObject[U]]() ClusterFactory[T, U, PT, PU] {
-	return &DelegatingClusterFactory[T, U, PT, PU]{}
+func NewDelegatingClusterFactory[T, V any, PT ClusterObject[T, V, PV], PV ClusterNodeObject[V]]() ClusterFactory[T, V, PT, PV] {
+	return &DelegatingClusterFactory[T, V, PT, PV]{}
 }
 
-func (m *DelegatingClusterFactory[T, U, PT, PU]) HashCluster(cluster PT) (string, error) {
-	return cluster.GetHash()
-}
-
-func (m *DelegatingClusterFactory[T, U, PT, PU]) GetClusterStatus(cluster PT) clusterv1alpha1.ClusterStatus {
+func (m *DelegatingClusterFactory[T, V, PT, PV]) GetClusterStatus(cluster PT) clusterv1alpha1.ClusterStatus {
 	return cluster.GetStatus()
 }
 
-func (m *DelegatingClusterFactory[T, U, PT, PU]) SetClusterStatus(cluster PT, status clusterv1alpha1.ClusterStatus) {
+func (m *DelegatingClusterFactory[T, V, PT, PV]) SetClusterStatus(cluster PT, status clusterv1alpha1.ClusterStatus) {
 	cluster.SetStatus(status)
 }
 
-func (m *DelegatingClusterFactory[T, U, PT, PU]) GetClusterReplicas(cluster PT) int {
-	return cluster.GetReplicas()
-}
-
-func (m *DelegatingClusterFactory[T, U, PT, PU]) GetClusterMinimumHealthyReplicas(cluster PT) int {
+func (m *DelegatingClusterFactory[T, V, PT, PV]) GetClusterMinimumHealthyReplicas(cluster PT) int {
 	return cluster.GetMinimumHealthyReplicas()
 }
 
-func (m *DelegatingClusterFactory[T, U, PT, PU]) GetClusterNode(cluster PT) PU {
+func (m *DelegatingClusterFactory[T, V, PT, PV]) HashCluster(cluster PT) (string, error) {
+	return cluster.GetHash()
+}
+
+func (m *DelegatingClusterFactory[T, V, PT, PV]) GetClusterReplicas(cluster PT) int {
+	return cluster.GetReplicas()
+}
+
+func (m *DelegatingClusterFactory[T, V, PT, PV]) GetClusterNode(cluster PT) PV {
 	return cluster.GetNode()
 }
 
-func (m *DelegatingClusterFactory[T, U, PT, PU]) HashClusterNode(node PU) (string, error) {
+func (m *DelegatingClusterFactory[T, V, PT, PV]) HashClusterNode(node PV) (string, error) {
 	return node.GetHash()
 }
 
-func (m *DelegatingClusterFactory[T, U, PT, PU]) GetClusterNodeStatus(node PU) clusterv1alpha1.ClusterNodeStatus {
+func (m *DelegatingClusterFactory[T, V, PT, PV]) GetClusterNodeStatus(node PV) clusterv1alpha1.ClusterNodeStatus {
 	return node.GetStatus()
 }
 
-func (m *DelegatingClusterFactory[T, U, PT, PU]) SetClusterNodeStatus(node PU, status clusterv1alpha1.ClusterNodeStatus) {
+func (m *DelegatingClusterFactory[T, V, PT, PV]) SetClusterNodeStatus(node PV, status clusterv1alpha1.ClusterNodeStatus) {
 	node.SetStatus(status)
 }
 
-func (m *DelegatingClusterFactory[T, U, PT, PU]) GetClusterNodePod(node PU) *corev1.Pod {
+func (m *DelegatingClusterFactory[T, V, PT, PV]) GetClusterNodePod(node PV) *corev1.Pod {
+	return node.GetPod()
+}
+
+type DelegatingPooledClusterFactory[T, U, V any, PT PooledClusterObject[T], PU ClusterPoolObject[U, V, PV], PV ClusterNodeObject[V]] struct{}
+
+func NewDelegatingPooledClusterFactory[T, U, V any, PT PooledClusterObject[T], PU ClusterPoolObject[U, V, PV], PV ClusterNodeObject[V]]() PooledClusterFactory[T, U, V, PT, PU, PV] {
+	return &DelegatingPooledClusterFactory[T, U, V, PT, PU, PV]{}
+}
+
+func (m *DelegatingPooledClusterFactory[T, U, V, PT, PU, PV]) GetClusterStatus(cluster PT) clusterv1alpha1.ClusterStatus {
+	return cluster.GetStatus()
+}
+
+func (m *DelegatingPooledClusterFactory[T, U, V, PT, PU, PV]) SetClusterStatus(cluster PT, status clusterv1alpha1.ClusterStatus) {
+	cluster.SetStatus(status)
+}
+
+func (m *DelegatingPooledClusterFactory[T, U, V, PT, PU, PV]) GetClusterMinimumHealthyReplicas(cluster PT) int {
+	return cluster.GetMinimumHealthyReplicas()
+}
+
+func (m *DelegatingPooledClusterFactory[T, U, V, PT, PU, PV]) GetClusterPoolsOptions(cluster PT) []client.ListOption {
+	return cluster.GetPoolsOptions()
+}
+
+func (m *DelegatingPooledClusterFactory[T, U, V, PT, PU, PV]) HashClusterPool(pool PU) (string, error) {
+	return pool.GetHash()
+}
+
+func (m *DelegatingPooledClusterFactory[T, U, V, PT, PU, PV]) GetClusterPoolReplicas(pool PU) int {
+	return pool.GetReplicas()
+}
+
+func (m *DelegatingPooledClusterFactory[T, U, V, PT, PU, PV]) GetClusterPoolNode(pool PU) PV {
+	return pool.GetNode()
+}
+
+func (m *DelegatingPooledClusterFactory[T, U, V, PT, PU, PV]) GetClusterPoolStatus(pool PU) clusterv1alpha1.ClusterPoolStatus {
+	return pool.GetStatus()
+}
+
+func (m *DelegatingPooledClusterFactory[T, U, V, PT, PU, PV]) SetClusterPoolStatus(pool PU, status clusterv1alpha1.ClusterPoolStatus) {
+	pool.SetStatus(status)
+}
+
+func (m *DelegatingPooledClusterFactory[T, U, V, PT, PU, PV]) GetClusterForPool(pool PU) types.NamespacedName {
+	return pool.GetCluster()
+}
+
+func (m *DelegatingPooledClusterFactory[T, U, V, PT, PU, PV]) HashClusterNode(node PV) (string, error) {
+	return node.GetHash()
+}
+
+func (m *DelegatingPooledClusterFactory[T, U, V, PT, PU, PV]) GetClusterNodeStatus(node PV) clusterv1alpha1.ClusterNodeStatus {
+	return node.GetStatus()
+}
+
+func (m *DelegatingPooledClusterFactory[T, U, V, PT, PU, PV]) SetClusterNodeStatus(node PV, status clusterv1alpha1.ClusterNodeStatus) {
+	node.SetStatus(status)
+}
+
+func (m *DelegatingPooledClusterFactory[T, U, V, PT, PU, PV]) GetClusterNodePod(node PV) *corev1.Pod {
 	return node.GetPod()
 }

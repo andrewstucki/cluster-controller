@@ -10,15 +10,15 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-type TestClusterFactory[T, U any, PT ClusterObject[T, U, PU], PU ClusterNodeObject[U]] struct {
-	DelegatingClusterFactory[T, U, PT, PU]
+type TestClusterFactory[T, V any, PT ClusterObject[T, V, PV], PV ClusterNodeObject[V]] struct {
+	DelegatingClusterFactory[T, V, PT, PV]
 
 	Client         client.Client
 	ResourceClient *ResourceClient[T, PT]
 }
 
-func NewTestClusterFactory[T, U any, PT ClusterObject[T, U, PU], PU ClusterNodeObject[U]](cl client.Client) *TestClusterFactory[T, U, PT, PU] {
-	return &TestClusterFactory[T, U, PT, PU]{
+func NewTestClusterFactory[T, V any, PT ClusterObject[T, V, PV], PV ClusterNodeObject[V]](cl client.Client) *TestClusterFactory[T, V, PT, PV] {
+	return &TestClusterFactory[T, V, PT, PV]{
 		Client: cl,
 		ResourceClient: &ResourceClient[T, PT]{
 			normalizer: &Normalizer[T, PT]{
@@ -34,18 +34,18 @@ func NewTestClusterFactory[T, U any, PT ClusterObject[T, U, PU], PU ClusterNodeO
 	}
 }
 
-func (f *TestClusterFactory[T, U, PT, PU]) WaitForStableNodes(ctx context.Context, timeout time.Duration, cluster PT) ([]PU, error) {
+func (f *TestClusterFactory[T, V, PT, PV]) WaitForStableNodes(ctx context.Context, expected int, timeout time.Duration, cluster PT) ([]PV, error) {
 	retryFor := backoff.WithMaxRetries(backoff.NewConstantBackOff(1*time.Second), uint64(timeout/time.Second))
-	var nodes []PU
+	var nodes []PV
 	err := backoff.Retry(func() error {
-		objects, err := f.ResourceClient.ListOwnedResources(ctx, cluster, newKubeObject[U, PU]())
+		objects, err := f.ResourceClient.ListOwnedResources(ctx, cluster, newKubeObject[V, PV]())
 		if err != nil {
 			return err
 		}
-		nodes = mapObjectsTo[PU](objects)
+		nodes = mapObjectsTo[PV](objects)
 
-		if len(nodes) != cluster.GetReplicas() {
-			return fmt.Errorf("cluster node length doesn't match: %d != %d", len(nodes), cluster.GetReplicas())
+		if len(nodes) != expected {
+			return fmt.Errorf("cluster node length doesn't match: %d != %d", len(nodes), expected)
 		}
 
 		for _, node := range nodes {

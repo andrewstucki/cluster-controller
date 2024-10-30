@@ -3,5 +3,27 @@ apiVersion: cluster.lambda.coffee/v1alpha1
 kind: Cluster
 metadata:
   name: cluster
+---
+apiVersion: cluster.lambda.coffee/v1alpha1
+kind: Pool
+metadata:
+  name: pool-1
 spec:
+  cluster: cluster
+  replicas: 1
+---
+apiVersion: cluster.lambda.coffee/v1alpha1
+kind: Pool
+metadata:
+  name: pool-2
+spec:
+  cluster: cluster
+  replicas: 2
+---
+apiVersion: cluster.lambda.coffee/v1alpha1
+kind: Pool
+metadata:
+  name: pool-3
+spec:
+  cluster: cluster
   replicas: 3

@@ -12,7 +12,9 @@ import (
 	policyv1 "k8s.io/api/policy/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/rand"
 	"k8s.io/utils/ptr"
@@ -143,10 +145,6 @@ func (b *Broker) NamespaceScopedSubresources() []client.Object {
 }
 
 type ClusterSpec struct {
-	// +required
-	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:Minimum=1
-	Replicas int `json:"replicas,omitempty"`
 	// +optional
 	MinimumHealthyReplicas int `json:"minimumHealthyReplicas,omitempty"`
 }
@@ -154,7 +152,6 @@ type ClusterSpec struct {
 // +kubebuilder:object:generate=true
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:subresource:scale:specpath=.spec.replicas,statuspath=.status.replicas,selectorpath=.status.selector
 // +kubebuilder:printcolumn:name="Replicas",type="integer",JSONPath=`.status.replicas`
 // +kubebuilder:printcolumn:name="Running Nodes",type="integer",JSONPath=`.status.runningReplicas`
 // +kubebuilder:printcolumn:name="Healthy Nodes",type="integer",JSONPath=`.status.healthyReplicas`
@@ -172,8 +169,12 @@ type Cluster struct {
 	Status clusterv1alpha1.ClusterStatus `json:"status,omitempty"`
 }
 
-func (c *Cluster) GetHash() (string, error) {
-	return "static", nil
+func (c *Cluster) GetPoolsOptions() []client.ListOption {
+	fieldSelector := fields.OneTermEqualSelector(poolClusterIndex, client.ObjectKeyFromObject(c).String())
+
+	return []client.ListOption{
+		client.MatchingFieldsSelector{Selector: fieldSelector},
+	}
 }
 
 func (c *Cluster) GetStatus() clusterv1alpha1.ClusterStatus {
@@ -184,15 +185,60 @@ func (c *Cluster) SetStatus(status clusterv1alpha1.ClusterStatus) {
 	c.Status = status
 }
 
-func (c *Cluster) GetReplicas() int {
-	return c.Spec.Replicas
-}
-
 func (c *Cluster) GetMinimumHealthyReplicas() int {
 	return c.Spec.MinimumHealthyReplicas
 }
 
-func (c *Cluster) GetNode() *Broker {
+type PoolSpec struct {
+	// +required
+	Cluster string `json:"cluster"`
+	// +required
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Minimum=1
+	Replicas        int `json:"replicas,omitempty"`
+	MinimumReplicas int `json:"minimumReplicas,omitempty"`
+}
+
+// +kubebuilder:object:generate=true
+// +kubebuilder:object:root=true
+// +kubebuilder:subresource:status
+// +kubebuilder:printcolumn:name="Replicas",type="integer",JSONPath=`.status.replicas`
+// +kubebuilder:printcolumn:name="Running Nodes",type="integer",JSONPath=`.status.runningReplicas`
+// +kubebuilder:printcolumn:name="Healthy Nodes",type="integer",JSONPath=`.status.healthyReplicas`
+// +kubebuilder:printcolumn:name="Up-to-date Nodes",type="integer",priority=1,JSONPath=`.status.upToDateReplicas`
+// +kubebuilder:printcolumn:name="Out-of-date Nodes",type="integer",priority=1,JSONPath=`.status.outOfDateReplicas`
+// +kubebuilder:subresource:scale:specpath=.spec.replicas,statuspath=.status.replicas,selectorpath=.status.selector
+// Pool is the Schema for the Pools API
+type Pool struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+
+	// +optional
+	Spec   PoolSpec                          `json:"spec,omitempty"`
+	Status clusterv1alpha1.ClusterPoolStatus `json:"status,omitempty"`
+}
+
+func (p *Pool) GetCluster() types.NamespacedName {
+	return types.NamespacedName{Namespace: p.Namespace, Name: p.Spec.Cluster}
+}
+
+func (p *Pool) GetHash() (string, error) {
+	return "static", nil
+}
+
+func (p *Pool) GetStatus() clusterv1alpha1.ClusterPoolStatus {
+	return p.Status
+}
+
+func (p *Pool) SetStatus(status clusterv1alpha1.ClusterPoolStatus) {
+	p.Status = status
+}
+
+func (p *Pool) GetReplicas() int {
+	return p.Spec.Replicas
+}
+
+func (p *Pool) GetNode() *Broker {
 	return &Broker{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "broker",
@@ -200,28 +246,24 @@ func (c *Cluster) GetNode() *Broker {
 	}
 }
 
-func (c *Cluster) ClusterScopedSubresources() []client.Object {
+func (p *Pool) ClusterScopedSubresources() []client.Object {
 	return []client.Object{}
 }
 
-func (c *Cluster) NamespaceScopedSubresources() []client.Object {
-	minHealthy := c.Spec.MinimumHealthyReplicas
-	if minHealthy > c.Status.HealthyReplicas {
-		minHealthy = c.Status.HealthyReplicas
-	}
-
+func (p *Pool) NamespaceScopedSubresources() []client.Object {
 	return []client.Object{
 		&policyv1.PodDisruptionBudget{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:      c.Name,
-				Namespace: c.Namespace,
+				Name:      p.Name,
+				Namespace: p.Namespace,
 			},
 			Spec: policyv1.PodDisruptionBudgetSpec{
-				MinAvailable: ptr.To(intstr.FromInt(minHealthy)),
+				MinAvailable: ptr.To(intstr.FromInt(p.Spec.MinimumReplicas)),
 				Selector: &metav1.LabelSelector{
 					MatchLabels: map[string]string{
-						"cluster-name":      c.Name,
-						"cluster-namespace": c.Namespace,
+						"cluster-name":      p.Spec.Cluster,
+						"cluster-namespace": p.Namespace,
+						"cluster-pool-name": p.Name,
 					},
 				},
 			},
@@ -236,6 +278,15 @@ type ClusterList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
 	Items           []Cluster `json:"items"`
+}
+
+// +kubebuilder:object:generate=true
+// +kubebuilder:object:root=true
+// PoolList contains a list of Pool
+type PoolList struct {
+	metav1.TypeMeta `json:",inline"`
+	metav1.ListMeta `json:"metadata,omitempty"`
+	Items           []Pool `json:"items"`
 }
 
 // +kubebuilder:object:generate=true

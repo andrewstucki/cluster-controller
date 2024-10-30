@@ -3,6 +3,7 @@
 # It should be run by config/default
 resources:
 - bases/cluster.lambda.coffee_clusters.yaml
+- bases/cluster.lambda.coffee_pools.yaml
 - bases/cluster.lambda.coffee_brokers.yaml
 
 patches:
