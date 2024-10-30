@@ -19,6 +19,7 @@ type GarbageCollector[T, U, V any, PT ptrToObject[T], PU ptrToObject[U], PV ptrT
 	logger  logr.Logger
 	timeout time.Duration
 
+	pooled                 bool
 	ownerTypeLabel         string
 	clusterOwnerFromLabels func(map[string]string) types.NamespacedName
 	poolOwnerFromLabels    func(map[string]string) types.NamespacedName
@@ -39,6 +40,7 @@ func NewGarbageCollector[T, U, V any, PT ptrToObject[T], PU ptrToObject[U], PV p
 		nodeOwnerFromLabels:    config.nodeOwnerFromLabels,
 		resourceClient:         config.clusterResourceClient(),
 		clusterResources:       config.ClusterResourceFactory.ClusterScopedResourceTypes(),
+		pooled:                 config.Pooled,
 		poolResources:          config.PoolResourceFactory.ClusterScopedResourceTypes(),
 		nodeResources:          config.NodeResourceFactory.ClusterScopedResourceTypes(),
 	}
@@ -79,25 +81,16 @@ func (g *GarbageCollector[T, U, V, PT, PU, PV]) runOnce(ctx context.Context) err
 		return err
 	}
 
-	existingPools, err := g.resourceClient.ListResources(ctx, newKubeObject[U, PU]())
-	if err != nil {
-		return err
-	}
-
 	existingNodes, err := g.resourceClient.ListResources(ctx, newKubeObject[V, PV]())
 	if err != nil {
 		return err
 	}
 
 	referencedClusters := map[types.NamespacedName]struct{}{}
-	referencedPools := map[types.NamespacedName]struct{}{}
 	referencedNodes := map[types.NamespacedName]struct{}{}
 
 	for _, cluster := range existingClusters {
 		referencedClusters[client.ObjectKeyFromObject(cluster)] = struct{}{}
-	}
-	for _, pool := range existingPools {
-		referencedPools[client.ObjectKeyFromObject(pool)] = struct{}{}
 	}
 	for _, node := range existingNodes {
 		referencedNodes[client.ObjectKeyFromObject(node)] = struct{}{}
@@ -127,27 +120,6 @@ func (g *GarbageCollector[T, U, V, PT, PU, PV]) runOnce(ctx context.Context) err
 		}
 	}
 
-	for _, resourceType := range g.poolResources {
-		objects, err := g.resourceClient.ListMatchingResources(ctx, resourceType, map[string]string{g.ownerTypeLabel: "pool"})
-		if err != nil {
-			errs = append(errs, err)
-			continue
-		}
-		for _, object := range objects {
-			objectID := client.ObjectKeyFromObject(object)
-			owner := g.poolOwnerFromLabels(object.GetLabels())
-
-			if owner.Namespace != "" && owner.Name != "" {
-				g.logger.V(4).Info("found pool owned resource", "owner", owner, "resourceType", fmt.Sprintf("%T", resourceType), "resource", objectID)
-			}
-
-			if _, found := referencedPools[owner]; !found {
-				g.logger.V(4).Info("owner pool not found, deleting resource", "owner", owner, "resourceType", fmt.Sprintf("%T", resourceType), "resource", objectID)
-				itemsToDelete = append(itemsToDelete, object)
-			}
-		}
-	}
-
 	for _, resourceType := range g.nodeResources {
 		objects, err := g.resourceClient.ListMatchingResources(ctx, resourceType, map[string]string{g.ownerTypeLabel: "node"})
 		if err != nil {
@@ -165,6 +137,39 @@ func (g *GarbageCollector[T, U, V, PT, PU, PV]) runOnce(ctx context.Context) err
 			if _, found := referencedNodes[owner]; !found {
 				g.logger.V(4).Info("owner node not found, deleting resource", "owner", owner, "resourceType", fmt.Sprintf("%T", resourceType), "resource", objectID)
 				itemsToDelete = append(itemsToDelete, object)
+			}
+		}
+	}
+
+	if g.pooled {
+		existingPools, err := g.resourceClient.ListResources(ctx, newKubeObject[U, PU]())
+		if err != nil {
+			return err
+		}
+
+		referencedPools := map[types.NamespacedName]struct{}{}
+		for _, pool := range existingPools {
+			referencedPools[client.ObjectKeyFromObject(pool)] = struct{}{}
+		}
+
+		for _, resourceType := range g.poolResources {
+			objects, err := g.resourceClient.ListMatchingResources(ctx, resourceType, map[string]string{g.ownerTypeLabel: "pool"})
+			if err != nil {
+				errs = append(errs, err)
+				continue
+			}
+			for _, object := range objects {
+				objectID := client.ObjectKeyFromObject(object)
+				owner := g.poolOwnerFromLabels(object.GetLabels())
+
+				if owner.Namespace != "" && owner.Name != "" {
+					g.logger.V(4).Info("found pool owned resource", "owner", owner, "resourceType", fmt.Sprintf("%T", resourceType), "resource", objectID)
+				}
+
+				if _, found := referencedPools[owner]; !found {
+					g.logger.V(4).Info("owner pool not found, deleting resource", "owner", owner, "resourceType", fmt.Sprintf("%T", resourceType), "resource", objectID)
+					itemsToDelete = append(itemsToDelete, object)
+				}
 			}
 		}
 	}
