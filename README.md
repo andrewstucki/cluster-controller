@@ -48,7 +48,6 @@ into your implementing structure.
 controller.NewDelegatingPooledClusterFactory[Cluster, Pool, Node]()
 controller.Pooled(mgr, factory).
     WithSubscriber(subscriber).
-    WithPoolIndices(controller.NewIndex(poolClusterIndex, indexPoolCluster)).
     WithPoolResourceFactory(controller.NewDelegatingResourceFactory[Pool](
         []client.Object{},
         []client.Object{&policyv1.PodDisruptionBudget{}},

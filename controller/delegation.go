@@ -61,7 +61,6 @@ type PooledClusterObject[T any] interface {
 	GetStatus() clusterv1alpha1.ClusterStatus
 	SetStatus(status clusterv1alpha1.ClusterStatus)
 	GetMinimumHealthyReplicas() int
-	GetPoolsOptions() []client.ListOption
 
 	*T
 }
@@ -150,10 +149,6 @@ func (m *DelegatingPooledClusterFactory[T, U, V, PT, PU, PV]) SetClusterStatus(c
 
 func (m *DelegatingPooledClusterFactory[T, U, V, PT, PU, PV]) GetClusterMinimumHealthyReplicas(cluster PT) int {
 	return cluster.GetMinimumHealthyReplicas()
-}
-
-func (m *DelegatingPooledClusterFactory[T, U, V, PT, PU, PV]) GetClusterPoolsOptions(cluster PT) []client.ListOption {
-	return cluster.GetPoolsOptions()
 }
 
 func (m *DelegatingPooledClusterFactory[T, U, V, PT, PU, PV]) HashClusterPool(pool PU) (string, error) {

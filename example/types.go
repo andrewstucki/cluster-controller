@@ -12,7 +12,6 @@ import (
 	policyv1 "k8s.io/api/policy/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -167,14 +166,6 @@ type Cluster struct {
 	// +optional
 	Spec   ClusterSpec                   `json:"spec,omitempty"`
 	Status clusterv1alpha1.ClusterStatus `json:"status,omitempty"`
-}
-
-func (c *Cluster) GetPoolsOptions() []client.ListOption {
-	fieldSelector := fields.OneTermEqualSelector(poolClusterIndex, client.ObjectKeyFromObject(c).String())
-
-	return []client.ListOption{
-		client.MatchingFieldsSelector{Selector: fieldSelector},
-	}
 }
 
 func (c *Cluster) GetStatus() clusterv1alpha1.ClusterStatus {

@@ -72,7 +72,6 @@ func main() {
 	factory := controller.NewDelegatingPooledClusterFactory[Cluster, Pool, Broker]()
 	if err := controller.Pooled(mgr, factory).
 		WithSubscriber(&Subscriber{logger: mgr.GetLogger()}).
-		WithPoolIndices(controller.NewIndex(poolClusterIndex, indexPoolCluster)).
 		WithNodeResourceFactory(controller.NewDelegatingResourceFactory[Broker](
 			[]client.Object{&corev1.PersistentVolume{}},
 			[]client.Object{&corev1.PersistentVolumeClaim{}},

@@ -16,6 +16,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
+const poolClusterIndex = "__pool.__cluster"
+
 type ClusterPoolReconciler[T, U, V any, PT ptrToObject[T], PU ptrToObject[U], PV ptrToObject[V]] struct {
 	config *Config[T, U, V, PT, PU, PV]
 
@@ -23,24 +25,22 @@ type ClusterPoolReconciler[T, U, V any, PT ptrToObject[T], PU ptrToObject[U], PV
 	resourceManager *ResourceManager[U, PU]
 }
 
-func setupClusterPoolReconciler[T, U, V any, PT ptrToObject[T], PU ptrToObject[U], PV ptrToObject[V]](ctx context.Context, mgr ctrl.Manager, indices []*Index[U, PU], config *Config[T, U, V, PT, PU, PV]) error {
+func setupClusterPoolReconciler[T, U, V any, PT ptrToObject[T], PU ptrToObject[U], PV ptrToObject[V]](ctx context.Context, mgr ctrl.Manager, config *Config[T, U, V, PT, PU, PV]) error {
 	return (&ClusterPoolReconciler[T, U, V, PT, PU, PV]{
 		config:          config,
 		resourceManager: config.poolResourceManager(),
 		nodeManager:     config.clusterNodeManager(),
-	}).setupWithManager(ctx, mgr, indices)
+	}).setupWithManager(ctx, mgr)
 }
 
-func (r *ClusterPoolReconciler[T, U, V, PT, PU, PV]) setupWithManager(ctx context.Context, mgr ctrl.Manager, indices []*Index[U, PU]) error {
+func (r *ClusterPoolReconciler[T, U, V, PT, PU, PV]) setupWithManager(ctx context.Context, mgr ctrl.Manager) error {
 	indexer := mgr.GetFieldIndexer()
 
-	for _, index := range indices {
-		err := indexer.IndexField(ctx, newKubeObject[U, PU](), index.Name, func(o client.Object) []string {
-			return index.Indexer(o.(PU))
-		})
-		if err != nil {
-			return fmt.Errorf("adding field index: %w", err)
-		}
+	err := indexer.IndexField(ctx, newKubeObject[U, PU](), poolClusterIndex, func(o client.Object) []string {
+		return []string{r.config.Factory.GetClusterForPool(o.(PU)).String()}
+	})
+	if err != nil {
+		return fmt.Errorf("adding field index: %w", err)
 	}
 
 	builder := ctrl.NewControllerManagedBy(mgr).For(newKubeObject[U, PU]())

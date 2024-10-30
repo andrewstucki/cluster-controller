@@ -4,7 +4,6 @@ import (
 	clusterv1alpha1 "github.com/andrewstucki/cluster-controller/controller/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 type ClusterFactory[T, V any, PT ptrToObject[T], PV ptrToObject[V]] interface {
@@ -28,7 +27,6 @@ type PooledClusterFactory[T, U, V any, PT ptrToObject[T], PU ptrToObject[U], PV 
 	GetClusterStatus(cluster PT) clusterv1alpha1.ClusterStatus
 	SetClusterStatus(cluster PT, status clusterv1alpha1.ClusterStatus)
 	GetClusterMinimumHealthyReplicas(cluster PT) int
-	GetClusterPoolsOptions(cluster PT) []client.ListOption
 
 	// Pools
 	HashClusterPool(pool PU) (string, error)

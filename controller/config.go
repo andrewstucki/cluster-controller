@@ -33,18 +33,6 @@ type ClusterLabels struct {
 	PoolLabel      string
 }
 
-type Index[T any, PT ptrToObject[T]] struct {
-	Name    string
-	Indexer func(o PT) []string
-}
-
-func NewIndex[T any, PT ptrToObject[T]](name string, fn func(o PT) []string) *Index[T, PT] {
-	return &Index[T, PT]{
-		Name:    name,
-		Indexer: fn,
-	}
-}
-
 type Config[T, U, V any, PT ptrToObject[T], PU ptrToObject[U], PV ptrToObject[V]] struct {
 	Logger                   logr.Logger
 	GarbageCollectionTimeout time.Duration
@@ -227,8 +215,6 @@ type ConfigBuilder[T, U, V any, PT ptrToObject[T], PU ptrToObject[U], PV ptrToOb
 	poolResourceFactory    ResourceFactory[U, PU]
 	nodeResourceFactory    ResourceFactory[V, PV]
 
-	poolIndices []*Index[U, PU]
-
 	fieldOwner client.FieldOwner
 	finalizer  string
 
@@ -291,7 +277,6 @@ func Pooled[T, U, V any, PT ptrToObject[T], PU ptrToObject[U], PV ptrToObject[V]
 		poolManagerFn: func(c *Config[T, U, V, PT, PU, PV]) PoolManager[T, U, PT, PU] {
 			return &concretePoolManager[T, U, PT, PU]{
 				ResourceClient: c.clusterResourceClient(),
-				poolOptions:    c.Factory.GetClusterPoolsOptions,
 			}
 		},
 	}
@@ -357,11 +342,6 @@ func (c *ConfigBuilder[T, U, V, PT, PU, PV]) WithGarbageCollectionTimeout(timeou
 	return c
 }
 
-func (c *ConfigBuilder[T, U, V, PT, PU, PV]) WithPoolIndices(indices ...*Index[U, PU]) *ConfigBuilder[T, U, V, PT, PU, PV] {
-	c.poolIndices = append(c.poolIndices, indices...)
-	return c
-}
-
 func (c *ConfigBuilder[T, U, V, PT, PU, PV]) Testing() *ConfigBuilder[T, U, V, PT, PU, PV] {
 	c.testing = true
 	return c
@@ -399,7 +379,7 @@ func (c *ConfigBuilder[T, U, V, PT, PU, PV]) Setup(ctx context.Context) error {
 	}
 
 	if c.pooled {
-		if err := setupClusterPoolReconciler(ctx, c.runtimeManager, c.poolIndices, config); err != nil {
+		if err := setupClusterPoolReconciler(ctx, c.runtimeManager, config); err != nil {
 			return fmt.Errorf("setting up cluster pool reconciler: %w", err)
 		}
 	}
